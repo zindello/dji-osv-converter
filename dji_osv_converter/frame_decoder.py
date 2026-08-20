@@ -91,6 +91,7 @@ class HEVCDecoder:
         self._video_streams = []
         self._frame_index = FrameIndex()
         self._total_frames = 0
+        self._last_decoded_frame = -1  # Track last successfully decoded frame
 
         self._open_container()
         self._discover_video_streams()
@@ -154,65 +155,53 @@ class HEVCDecoder:
         """
         Decode a specific frame from all streams (synchronously).
 
-        Seeks to frame_num in first stream, then decodes all streams until
-        that frame is available from all cameras.
+        Uses caching: on first request, decodes ALL frames. Subsequent requests hit cache.
 
         Args:
             frame_num: Frame number to decode (0-indexed)
-            timeout_s: Maximum wait time for all streams
+            timeout_s: Unused
 
         Returns:
-            Dict mapping stream_idx -> RGB24 frame bytes, or None on timeout
+            Dict mapping stream_idx -> RGB24 frame bytes, or None on failure
         """
         if not self._container or not self._video_streams:
             raise RuntimeError("Decoder not initialized")
 
-        # Seek to approximate position in first stream
-        first_stream = self._video_streams[0]
-        target_pts = int(frame_num * (first_stream.time_base.denominator /
-                                      (first_stream.time_base.numerator * float(first_stream.average_rate))))
+        # Return cached frame if available
+        if self._frame_index.has_all_streams_for_frame(frame_num, len(self._video_streams)):
+            logger.debug(f"[FRAME {frame_num}] Cache hit")
+            return self._frame_index.get_frame_tuple(frame_num, len(self._video_streams))
 
-        try:
-            self._container.seek(target_pts, stream=first_stream)
-            logger.debug(f"Seeked to frame {frame_num}")
-        except Exception as e:
-            logger.warning(f"Seek failed: {e}, decoding linearly instead")
-
-        # Decode until we have the target frame from all streams
-        max_frames_to_decode = frame_num + 100  # Reasonable upper bound
+        # On first decode request, decode ALL frames sequentially (no seeking)
+        logger.info(f"[FRAME {frame_num}] Cache miss - decoding entire file")
         frames_decoded = 0
+        frames_cached = 0
 
         for packet in self._container.demux(self._video_streams):
             for frame in packet.decode():
                 stream_idx = self._video_streams.index(packet.stream)
-                current_frame_num = frame.pts * packet.stream.time_base
+                current_frame_num = int(frame.pts * packet.stream.time_base)
 
                 # Convert frame to RGB24 bytes
                 rgb_frame = frame.reformat(format="rgb24")
                 frame_bytes = rgb_frame.to_ndarray().tobytes()
 
-                self._frame_index.add_frame(stream_idx, int(current_frame_num), frame_bytes)
+                self._frame_index.add_frame(stream_idx, current_frame_num, frame_bytes)
+                frames_cached += 1
 
                 frames_decoded += 1
+                if frames_decoded % 100 == 0:
+                    logger.info(f"[FRAME {frame_num}] Decoding... {frames_decoded} frames processed")
 
-                # Check if we have all streams for target frame
-                if self._frame_index.has_all_streams_for_frame(frame_num, len(self._video_streams)):
-                    result = self._frame_index.get_frame_tuple(frame_num, len(self._video_streams))
-                    logger.debug(f"Decoded frame {frame_num} from {len(self._video_streams)} streams")
-                    return result
+        logger.info(f"[FRAME {frame_num}] Decode complete: cached {frames_cached} total frames")
 
-                # Safety limit
-                if frames_decoded > max_frames_to_decode:
-                    logger.warning(f"Gave up after {frames_decoded} frames")
-                    return None
-
-            # Early exit if we've found the frame
-            if self._frame_index.has_all_streams_for_frame(frame_num, len(self._video_streams)):
-                result = self._frame_index.get_frame_tuple(frame_num, len(self._video_streams))
-                return result
-
-        logger.warning(f"End of file reached without finding frame {frame_num}")
-        return None
+        # Now return the requested frame
+        if self._frame_index.has_all_streams_for_frame(frame_num, len(self._video_streams)):
+            logger.info(f"[FRAME {frame_num}] SUCCESS - frame found in cache")
+            return self._frame_index.get_frame_tuple(frame_num, len(self._video_streams))
+        else:
+            logger.warning(f"[FRAME {frame_num}] Frame not found even after full decode")
+            return None
 
     def get_total_frames(self) -> int:
         """Get total frame count from first video stream"""

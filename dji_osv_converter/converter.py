@@ -12,6 +12,7 @@ Orchestrates the full conversion pipeline:
 import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import json
@@ -126,9 +127,13 @@ class StitchingPipeline:
             logger.info("Step 5: Processing frames...")
             frames_processed = 0
 
+            loop_start = time.time()
             for frame_num in range(start_frame, end_frame):
+                frame_start = time.time()
+
                 # Extract frames
                 frame_data = self.frame_extractor.get_frame(frame_num)
+                extract_time = time.time() - frame_start
                 if not frame_data:
                     logger.warning(f"  Failed to extract frame {frame_num}")
                     continue
@@ -140,7 +145,10 @@ class StitchingPipeline:
                     calibration = calibrations[-1] if calibrations else None
 
                 # Stitch frame (or use stub)
+                stitch_start = time.time()
                 stitched = self._stitch_frame(frame_data, calibration)
+                stitch_time = time.time() - stitch_start
+
                 if stitched is None:
                     logger.warning(f"  Failed to stitch frame {frame_num}")
                     continue
@@ -149,9 +157,13 @@ class StitchingPipeline:
                 encoder_process.stdin.write(stitched)
 
                 frames_processed += 1
-                if frames_processed % 100 == 0:
-                    progress = (frame_num - start_frame) / (end_frame - start_frame)
-                    logger.info(f"  Progress: {frames_processed} frames ({progress*100:.1f}%)")
+                total_frame_time = time.time() - frame_start
+
+                if frames_processed == 1 or frames_processed % 10 == 0:
+                    elapsed = time.time() - loop_start
+                    fps = frames_processed / elapsed if elapsed > 0 else 0
+                    eta_secs = (end_frame - start_frame - frames_processed) / fps if fps > 0 else 0
+                    logger.info(f"  [{frames_processed}/{end_frame-start_frame}] extract={extract_time:.2f}s stitch={stitch_time:.2f}s total={total_frame_time:.2f}s | fps={fps:.2f} ETA={eta_secs/60:.1f}m")
 
             # Step 6: Finalize encoding
             logger.info("Step 6: Finalizing encoding...")
