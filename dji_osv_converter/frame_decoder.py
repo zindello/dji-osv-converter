@@ -1,12 +1,12 @@
-"""Multi-stream HEVC frame extraction from OSV files
+"""Multi-stream HEVC frame extraction with PTS-based synchronization
 
-Handles synchronized decoding of all 8 camera streams in an OSV file.
-Uses PyAV for efficient HEVC decoding with frame synchronization.
+Uses packet-level buffering to synchronize desynchronized streams.
+No seeking, no redundant decoding - just stream-aligned buffering.
 """
 
 import logging
 import threading
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import av
@@ -14,63 +14,73 @@ import av
 logger = logging.getLogger(__name__)
 
 
-class FrameIndex:
-    """Thread-safe frame index for synchronizing multi-stream decoding"""
+class StreamBuffer:
+    """Per-stream packet buffer with frame extraction"""
 
-    def __init__(self):
-        self._frames: Dict[Tuple[int, int], bytes] = {}  # (stream_idx, frame_num) -> frame_data
-        self._lock = threading.Lock()
-        self._stream_frame_counts = defaultdict(int)  # stream_idx -> max frame number
+    def __init__(self, stream_idx: int, stream):
+        self.stream_idx = stream_idx
+        self.stream = stream
+        self.packets = deque()
+        self.decoded_frames = {}  # frame_num -> bytes
+        self.max_frame_seen = -1
+        self.lock = threading.Lock()
 
-    def add_frame(self, stream_idx: int, frame_num: int, frame_data: bytes) -> None:
-        """Store a decoded frame"""
-        with self._lock:
-            self._frames[(stream_idx, frame_num)] = frame_data
-            self._stream_frame_counts[stream_idx] = max(
-                self._stream_frame_counts[stream_idx],
-                frame_num + 1
-            )
+    def add_packet(self, packet):
+        """Add a packet to the buffer"""
+        with self.lock:
+            self.packets.append(packet)
 
-    def get_frame(self, stream_idx: int, frame_num: int) -> Optional[bytes]:
-        """Retrieve a decoded frame"""
-        with self._lock:
-            return self._frames.get((stream_idx, frame_num))
+    def decode_up_to_frame(self, target_frame_num: int) -> bool:
+        """
+        Decode packets until we have target_frame_num.
+        Returns True if target frame is now available.
+        """
+        with self.lock:
+            # If we already have it, return
+            if target_frame_num in self.decoded_frames:
+                return True
 
-    def has_all_streams_for_frame(self, frame_num: int, num_streams: int) -> bool:
-        """Check if all streams have decoded a specific frame"""
-        with self._lock:
-            for stream_idx in range(num_streams):
-                if (stream_idx, frame_num) not in self._frames:
-                    return False
-            return True
+            # Decode packets until we reach target frame
+            while self.packets:
+                packet = self.packets.popleft()
+                try:
+                    for frame in packet.decode():
+                        if frame.pts is None:
+                            continue
+                        frame_num = int(frame.pts * self.stream.time_base)
 
-    def get_frame_tuple(
-        self, frame_num: int, num_streams: int
-    ) -> Optional[Dict[int, bytes]]:
-        """Get all streams for a frame (blocks until all available)"""
-        max_wait_ms = 10000
-        elapsed_ms = 0
-        poll_interval_ms = 100
+                        # Convert to RGB24
+                        rgb_frame = frame.reformat(format="rgb24")
+                        frame_bytes = rgb_frame.to_ndarray().tobytes()
 
-        while elapsed_ms < max_wait_ms:
-            if self.has_all_streams_for_frame(frame_num, num_streams):
-                with self._lock:
-                    return {i: self._frames[(i, frame_num)] for i in range(num_streams)}
+                        self.decoded_frames[frame_num] = frame_bytes
+                        self.max_frame_seen = max(self.max_frame_seen, frame_num)
 
-            threading.Event().wait(poll_interval_ms / 1000.0)
-            elapsed_ms += poll_interval_ms
+                        # If we've reached target, we're done
+                        if frame_num >= target_frame_num:
+                            return True
 
-        return None  # Timeout waiting for all streams
+                except Exception as e:
+                    logger.error(f"Error decoding packet on stream {self.stream_idx}: {e}")
+                    continue
 
-    def clear(self) -> None:
-        """Clear all cached frames"""
-        with self._lock:
-            self._frames.clear()
-            self._stream_frame_counts.clear()
+            return False
+
+    def get_frame(self, frame_num: int) -> Optional[bytes]:
+        """Get a decoded frame if available"""
+        with self.lock:
+            return self.decoded_frames.get(frame_num)
+
+    def clear_old_frames(self, keep_from_frame: int) -> None:
+        """Clear frames older than a certain frame number to save memory"""
+        with self.lock:
+            frames_to_delete = [f for f in self.decoded_frames if f < keep_from_frame]
+            for f in frames_to_delete:
+                del self.decoded_frames[f]
 
 
 class HEVCDecoder:
-    """Decodes OSV file with multiple HEVC video streams"""
+    """Decodes OSV file with PTS-based multi-stream synchronization"""
 
     def __init__(self, filepath: Path):
         """
@@ -89,12 +99,14 @@ class HEVCDecoder:
 
         self._container: Optional[av.container.Container] = None
         self._video_streams = []
-        self._frame_index = FrameIndex()
+        self._stream_buffers: Dict[int, StreamBuffer] = {}
         self._total_frames = 0
-        self._last_decoded_frame = -1  # Track last successfully decoded frame
+        self._demux_thread = None
+        self._stop_demux = False
 
         self._open_container()
         self._discover_video_streams()
+        self._start_demux_thread()
 
     def _open_container(self) -> None:
         """Open the OSV file as FFmpeg container"""
@@ -109,17 +121,39 @@ class HEVCDecoder:
         if not self._container:
             raise RuntimeError("Container not open")
 
-        # Include only primary codec video streams (exclude thumbnails/mjpeg)
         self._video_streams = [
             stream for stream in self._container.streams
             if stream.type == "video" and stream.codec_context.name != "mjpeg"
         ]
         logger.info(f"Found {len(self._video_streams)} primary video streams")
 
-        if len(self._video_streams) < 2:
-            logger.warning(
-                f"Expected at least 2 video streams for OSV, found {len(self._video_streams)}"
-            )
+        # Create per-stream buffers
+        for idx, stream in enumerate(self._video_streams):
+            self._stream_buffers[idx] = StreamBuffer(idx, stream)
+
+    def _start_demux_thread(self) -> None:
+        """Start background thread that demuxes packets into per-stream buffers"""
+        def demux_worker():
+            """Background thread: demux packets into per-stream buffers"""
+            try:
+                for packet in self._container.demux(self._video_streams):
+                    if self._stop_demux:
+                        break
+
+                    # Find which stream this packet belongs to
+                    stream_idx = next(
+                        (i for i, s in enumerate(self._video_streams) if s == packet.stream),
+                        None
+                    )
+                    if stream_idx is not None:
+                        self._stream_buffers[stream_idx].add_packet(packet)
+
+            except Exception as e:
+                logger.error(f"Demux thread error: {e}")
+
+        self._demux_thread = threading.Thread(target=demux_worker, daemon=True)
+        self._demux_thread.start()
+        logger.info("Demux thread started")
 
     def get_video_stream_count(self) -> int:
         """Get number of video streams"""
@@ -132,13 +166,11 @@ class HEVCDecoder:
 
         stream = self._video_streams[idx]
 
-        # Calculate FPS from average_rate (can be Fraction)
         fps = 0.0
         if stream.average_rate:
             if isinstance(stream.average_rate, (int, float)):
                 fps = float(stream.average_rate)
             else:
-                # Handle Fraction or similar
                 fps = float(stream.average_rate.numerator) / float(stream.average_rate.denominator)
 
         return {
@@ -155,53 +187,47 @@ class HEVCDecoder:
         """
         Decode a specific frame from all streams (synchronously).
 
-        Uses caching: on first request, decodes ALL frames. Subsequent requests hit cache.
+        Uses PTS-based buffering to keep streams synchronized.
 
         Args:
             frame_num: Frame number to decode (0-indexed)
-            timeout_s: Unused
+            timeout_s: Maximum wait time for all streams
 
         Returns:
             Dict mapping stream_idx -> RGB24 frame bytes, or None on failure
         """
-        if not self._container or not self._video_streams:
-            raise RuntimeError("Decoder not initialized")
+        import time
 
-        # Return cached frame if available
-        if self._frame_index.has_all_streams_for_frame(frame_num, len(self._video_streams)):
-            logger.debug(f"[FRAME {frame_num}] Cache hit")
-            return self._frame_index.get_frame_tuple(frame_num, len(self._video_streams))
+        start_time = time.time()
 
-        # On first decode request, decode ALL frames sequentially (no seeking)
-        logger.info(f"[FRAME {frame_num}] Cache miss - decoding entire file")
-        frames_decoded = 0
-        frames_cached = 0
+        # Tell all stream buffers to decode up to target frame
+        logger.debug(f"[FRAME {frame_num}] Requesting from {len(self._stream_buffers)} streams")
 
-        for packet in self._container.demux(self._video_streams):
-            for frame in packet.decode():
-                stream_idx = self._video_streams.index(packet.stream)
-                current_frame_num = int(frame.pts * packet.stream.time_base)
+        while True:
+            # Check if all streams have this frame
+            all_ready = True
+            for idx, buffer in self._stream_buffers.items():
+                if buffer.get_frame(frame_num) is None:
+                    # Try to decode more packets for this stream
+                    buffer.decode_up_to_frame(frame_num)
+                    if buffer.get_frame(frame_num) is None:
+                        all_ready = False
 
-                # Convert frame to RGB24 bytes
-                rgb_frame = frame.reformat(format="rgb24")
-                frame_bytes = rgb_frame.to_ndarray().tobytes()
+            if all_ready:
+                # Got all streams
+                result = {idx: self._stream_buffers[idx].get_frame(frame_num)
+                          for idx in range(len(self._stream_buffers))}
+                elapsed = time.time() - start_time
+                logger.debug(f"[FRAME {frame_num}] Ready in {elapsed*1000:.0f}ms")
+                return result
 
-                self._frame_index.add_frame(stream_idx, current_frame_num, frame_bytes)
-                frames_cached += 1
+            # Timeout check
+            if time.time() - start_time > timeout_s:
+                logger.warning(f"[FRAME {frame_num}] Timeout after {timeout_s}s")
+                return None
 
-                frames_decoded += 1
-                if frames_decoded % 100 == 0:
-                    logger.info(f"[FRAME {frame_num}] Decoding... {frames_decoded} frames processed")
-
-        logger.info(f"[FRAME {frame_num}] Decode complete: cached {frames_cached} total frames")
-
-        # Now return the requested frame
-        if self._frame_index.has_all_streams_for_frame(frame_num, len(self._video_streams)):
-            logger.info(f"[FRAME {frame_num}] SUCCESS - frame found in cache")
-            return self._frame_index.get_frame_tuple(frame_num, len(self._video_streams))
-        else:
-            logger.warning(f"[FRAME {frame_num}] Frame not found even after full decode")
-            return None
+            # Small sleep to avoid busy-waiting
+            time.sleep(0.001)
 
     def get_total_frames(self) -> int:
         """Get total frame count from first video stream"""
@@ -212,7 +238,6 @@ class HEVCDecoder:
         if first_stream.frames:
             return first_stream.frames
 
-        # If frame count not available, estimate from duration and fps
         if first_stream.duration and first_stream.time_base and first_stream.average_rate:
             duration_s = float(first_stream.duration * first_stream.time_base)
             fps = float(first_stream.average_rate)
@@ -222,10 +247,12 @@ class HEVCDecoder:
 
     def close(self) -> None:
         """Close the container and clean up"""
+        self._stop_demux = True
+        if self._demux_thread:
+            self._demux_thread.join(timeout=5)
         if self._container:
             self._container.close()
             self._container = None
-        self._frame_index.clear()
 
 
 class FrameExtractor:
@@ -280,5 +307,5 @@ class FrameExtractor:
 __all__ = [
     "HEVCDecoder",
     "FrameExtractor",
-    "FrameIndex",
+    "StreamBuffer",
 ]
