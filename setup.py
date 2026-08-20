@@ -26,10 +26,13 @@ setup(
     author="DJI OSV Converter Contributors",
     url="https://github.com/zindello/djiclireframe",
     packages=find_packages(),
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     install_requires=[
-        # Core dependencies
-        # No external Python dependencies - uses system FFmpeg
+        "pyobjc>=12.0",
+        "pyobjc-framework-Cocoa>=12.0",
+        "pyobjc-framework-Metal>=12.0",
+        "protobuf>=3.20.0",
+        "PyAV>=10.0.0",
     ],
     extras_require={
         "dev": [
@@ -56,8 +59,6 @@ setup(
         "Topic :: Multimedia :: Video",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
