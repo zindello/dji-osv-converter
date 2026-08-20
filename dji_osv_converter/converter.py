@@ -22,6 +22,7 @@ from .frame_decoder import FrameExtractor
 from .protobuf_schema import FrameMetadataParser
 from .stitch_dualstitcher import DualStitcher, StitcherConfig, DualStitcherError
 from .stitch_opencv import create_stitcher
+from .stitch_gpu import GPUStitcher
 from .gpu import factory as gpu_factory
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class StitchingPipeline:
         self.metadata_parser = FrameMetadataParser()
         self.stitcher: Optional[DualStitcher] = None
         self.opencv_stitcher = None
+        self.gpu_stitcher: Optional[GPUStitcher] = None
         self.gpu_backend_name = gpu_backend
         self.gpu_backend = None
 
@@ -216,7 +218,7 @@ class StitchingPipeline:
                 self.frame_extractor.close()
 
     def _initialize_gpu_backend(self) -> None:
-        """Initialize GPU backend for color conversion acceleration"""
+        """Initialize GPU backend for acceleration (color conversion, undistortion, blending)"""
         try:
             if self.gpu_backend_name:
                 # User specified a GPU backend
@@ -228,14 +230,20 @@ class StitchingPipeline:
 
             if self.gpu_backend and self.gpu_backend.initialize():
                 logger.info(f"  GPU acceleration enabled: {self.gpu_backend.name}")
+
+                # Create GPU stitcher for frame processing
+                self.gpu_stitcher = GPUStitcher(self.gpu_backend)
+                logger.info(f"  GPU stitcher ready")
             else:
                 logger.info("  No GPU available, using CPU (slow mode)")
                 self.gpu_backend = None
+                self.gpu_stitcher = None
 
         except Exception as e:
             logger.warning(f"Failed to initialize GPU backend: {e}")
             logger.info("  Using CPU fallback")
             self.gpu_backend = None
+            self.gpu_stitcher = None
 
     def _extract_metadata_stream(self, output_path: Path) -> None:
         """Extract protobuf metadata stream from OSV file"""
@@ -286,6 +294,8 @@ class StitchingPipeline:
         """
         Stitch two input frames to equirectangular output.
 
+        Priority: GPU stitcher (fast) → OpenCV stitcher → Simple fallback
+
         Args:
             frame_data: Dict mapping stream_idx -> RGB24 frame bytes
             calibration: Per-frame camera calibration (or None)
@@ -304,15 +314,31 @@ class StitchingPipeline:
             frame0 = frame0.reshape((3840, 3840, 3))
             frame1 = frame1.reshape((3840, 3840, 3))
 
-            # Try OpenCV stitcher first
+            # Try GPU stitcher first (fastest)
+            if self.gpu_stitcher:
+                logger.debug("Using GPU stitcher...")
+                output = self.gpu_stitcher.stitch_frame(frame0, frame1, calibration)
+                if output is not None:
+                    # Resize to output dimensions if needed
+                    if output.shape != (self.OUTPUT_HEIGHT, self.OUTPUT_WIDTH, 3):
+                        import cv2
+
+                        output = cv2.resize(output, (self.OUTPUT_WIDTH, self.OUTPUT_HEIGHT))
+                    return output.tobytes()
+                else:
+                    logger.warning("GPU stitcher returned None, trying fallback")
+
+            # Try OpenCV stitcher (medium speed)
             if self.opencv_stitcher:
+                logger.debug("Using OpenCV stitcher...")
                 output = self.opencv_stitcher.stitch_frame(frame0, frame1, calibration)
                 if output is not None:
                     return output.tobytes()
                 else:
-                    logger.warning("OpenCV stitcher returned None, using fallback")
+                    logger.warning("OpenCV stitcher returned None, using simple fallback")
 
             # Fallback: Simple average stitching for testing
+            logger.debug("Using simple average fallback...")
             combined = np.average([frame0, frame1], axis=0).astype(np.uint8)
             output = np.zeros((self.OUTPUT_HEIGHT, self.OUTPUT_WIDTH, 3), dtype=np.uint8)
             output[:, :3840] = combined[:, :3840]
