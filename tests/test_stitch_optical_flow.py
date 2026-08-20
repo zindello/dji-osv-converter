@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Output directory for test results
-OUTPUT_DIR = Path(__file__).parent / "test_output_optical_flow"
+OUTPUT_DIR = Path(__file__).parent / "optical_flow_output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
@@ -565,7 +565,7 @@ class OpticalFlowStitchingTest:
 def main():
     """Main test entry point."""
     # Path to sample OSV file
-    osv_path = Path(__file__).parent / "osv_example" / "CAM_20260819204151_0011_D.OSV"
+    osv_path = Path(__file__).parent.parent / "osv_example" / "CAM_20260819204151_0011_D.OSV"
 
     if not osv_path.exists():
         logger.error(f"Sample OSV file not found: {osv_path}")

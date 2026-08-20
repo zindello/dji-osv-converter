@@ -28,11 +28,8 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
-        "pyobjc>=12.0",
-        "pyobjc-framework-Cocoa>=12.0",
-        "pyobjc-framework-Metal>=12.0",
         "protobuf>=3.20.0",
-        "PyAV>=10.0.0",
+        "av>=10.0.0",
         "numpy>=1.24.0",
         "opencv-contrib-python>=4.5.0",
     ],

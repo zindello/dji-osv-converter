@@ -1,590 +1,267 @@
-2026-08-20 16:11:20,548 - __main__ - INFO - Starting comprehensive test suite...
-2026-08-20 16:11:20,548 - __main__ - INFO - Setting up test with OSV file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-2026-08-20 16:11:20,548 - __main__ - INFO - Initializing frame extractor...
-2026-08-20 16:11:20,548 - dji_osv_converter.frame_decoder - DEBUG - Auto-detecting best decoder backend...
-2026-08-20 16:11:20,609 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
-2026-08-20 16:11:20,872 - dji_osv_converter.decoder.detect - DEBUG - VideoToolbox framework available
-2026-08-20 16:11:20,872 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': True}
-2026-08-20 16:11:20,872 - dji_osv_converter.decoder.detect - INFO - Auto-selected decoder backend: ffmpeg
-2026-08-20 16:11:20,919 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
-2026-08-20 16:11:20,933 - dji_osv_converter.decoder.detect - DEBUG - VideoToolbox framework available
-2026-08-20 16:11:20,934 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': True}
-2026-08-20 16:11:20,988 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg available, VideoToolbox support: True
-2026-08-20 16:11:20,988 - dji_osv_converter.decoder.factory - INFO - Initialized ffmpeg decoder backend
-2026-08-20 16:11:20,988 - dji_osv_converter.frame_decoder - INFO - Decoder backend ffmpeg initialized
-2026-08-20 16:11:20,988 - dji_osv_converter.frame_decoder - INFO - Using ffmpeg decoder backend
-2026-08-20 16:11:20,988 - dji_osv_converter.decoder.ffmpeg - INFO - Opening file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-2026-08-20 16:11:21,013 - dji_osv_converter.decoder.ffmpeg - INFO - Found 2 video streams
-2026-08-20 16:11:21,013 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 0: 3840×3840 @ 29.97fps, codec=hevc
-2026-08-20 16:11:21,013 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 1: 3840×3840 @ 29.97fps, codec=hevc
-2026-08-20 16:11:21,013 - dji_osv_converter.decoder.ffmpeg - DEBUG - Starting FFmpeg: ffmpeg -hwaccel videotoolbox -i /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV -pix_fmt rgb24 -f rawvideo -
-2026-08-20 16:11:21,017 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg subprocess started with VideoToolbox hardware acceleration
-2026-08-20 16:11:21,017 - dji_osv_converter.decoder.ffmpeg - DEBUG - FFmpeg reader thread started
-2026-08-20 16:11:21,017 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg decoder ready
-2026-08-20 16:11:21,017 - __main__ - INFO - Initializing optical flow stitcher...
-2026-08-20 16:11:21,017 - dji_osv_converter.stitch_optical_flow - INFO - OpticalFlowStitcher initialized: warping=True, poisson=True, seam_method=flow_guided, overlap=400px
-2026-08-20 16:11:21,017 - __main__ - INFO - Setup completed successfully
-2026-08-20 16:11:21,017 - __main__ - INFO - Extracting 5 frames from OSV file...
-2026-08-20 16:11:21,017 - __main__ - ERROR - Frame extraction failed: 'FrameExtractor' object is not iterable
-Traceback (most recent call last):
-  File "/Users/zindello/repositories/zindello/djiclireframe/test_stitch_optical_flow.py", line 114, in extract_test_frames
-    for frame_pair in self.frame_extractor:
-                      ^^^^^^^^^^^^^^^^^^^^
-TypeError: 'FrameExtractor' object is not iterable
-2026-08-20 16:11:21,017 - __main__ - ERROR - Frame extraction failed
-2026-08-20 16:11:42,229 - __main__ - INFO - Starting comprehensive test suite...
-2026-08-20 16:11:42,229 - __main__ - INFO - Setting up test with OSV file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-2026-08-20 16:11:42,229 - __main__ - INFO - Initializing frame extractor...
-2026-08-20 16:11:42,229 - dji_osv_converter.frame_decoder - DEBUG - Auto-detecting best decoder backend...
-2026-08-20 16:11:42,289 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
-2026-08-20 16:11:42,549 - dji_osv_converter.decoder.detect - DEBUG - VideoToolbox framework available
-2026-08-20 16:11:42,549 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': True}
-2026-08-20 16:11:42,549 - dji_osv_converter.decoder.detect - INFO - Auto-selected decoder backend: ffmpeg
-2026-08-20 16:11:42,595 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
-2026-08-20 16:11:42,609 - dji_osv_converter.decoder.detect - DEBUG - VideoToolbox framework available
-2026-08-20 16:11:42,609 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': True}
-2026-08-20 16:11:42,664 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg available, VideoToolbox support: True
-2026-08-20 16:11:42,664 - dji_osv_converter.decoder.factory - INFO - Initialized ffmpeg decoder backend
-2026-08-20 16:11:42,664 - dji_osv_converter.frame_decoder - INFO - Decoder backend ffmpeg initialized
-2026-08-20 16:11:42,664 - dji_osv_converter.frame_decoder - INFO - Using ffmpeg decoder backend
-2026-08-20 16:11:42,664 - dji_osv_converter.decoder.ffmpeg - INFO - Opening file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-2026-08-20 16:11:42,685 - dji_osv_converter.decoder.ffmpeg - INFO - Found 2 video streams
-2026-08-20 16:11:42,685 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 0: 3840×3840 @ 29.97fps, codec=hevc
-2026-08-20 16:11:42,685 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 1: 3840×3840 @ 29.97fps, codec=hevc
-2026-08-20 16:11:42,685 - dji_osv_converter.decoder.ffmpeg - DEBUG - Starting FFmpeg: ffmpeg -hwaccel videotoolbox -i /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV -pix_fmt rgb24 -f rawvideo -
-2026-08-20 16:11:42,689 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg subprocess started with VideoToolbox hardware acceleration
-2026-08-20 16:11:42,689 - dji_osv_converter.decoder.ffmpeg - DEBUG - FFmpeg reader thread started
-2026-08-20 16:11:42,689 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg decoder ready
-2026-08-20 16:11:42,689 - __main__ - INFO - Initializing optical flow stitcher...
-2026-08-20 16:11:42,689 - dji_osv_converter.stitch_optical_flow - INFO - OpticalFlowStitcher initialized: warping=True, poisson=True, seam_method=flow_guided, overlap=400px
-2026-08-20 16:11:42,689 - __main__ - INFO - Setup completed successfully
-2026-08-20 16:11:42,689 - __main__ - INFO - Extracting 5 frames from OSV file...
-2026-08-20 16:11:42,689 - __main__ - INFO - Total frames available: 4724
-2026-08-20 16:11:42,689 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 0] Waiting for frame from 2 streams
-2026-08-20 16:11:43,289 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 0] Ready in 599ms, 88473600 bytes
-2026-08-20 16:11:43,290 - __main__ - INFO - Extracted frame pair 1: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:11:43,290 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 1] Waiting for frame from 2 streams
-2026-08-20 16:11:43,390 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 1] Ready in 100ms, 88473600 bytes
-2026-08-20 16:11:43,390 - __main__ - INFO - Extracted frame pair 2: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:11:43,390 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 2] Waiting for frame from 2 streams
-2026-08-20 16:11:43,437 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 2] Ready in 47ms, 88473600 bytes
-2026-08-20 16:11:43,437 - __main__ - INFO - Extracted frame pair 3: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:11:43,437 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 3] Waiting for frame from 2 streams
-2026-08-20 16:11:43,487 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 3] Ready in 50ms, 88473600 bytes
-2026-08-20 16:11:43,487 - __main__ - INFO - Extracted frame pair 4: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:11:43,487 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 4] Waiting for frame from 2 streams
-2026-08-20 16:11:43,539 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 4] Ready in 51ms, 88473600 bytes
-2026-08-20 16:11:43,539 - __main__ - INFO - Extracted frame pair 5: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:11:43,539 - __main__ - INFO - Successfully extracted 5 frame pairs in 0.85s
-2026-08-20 16:11:43,539 - __main__ - INFO - 
+2026-08-20 16:32:21,745 - __main__ - ERROR - Sample OSV file not found: /Users/zindello/repositories/zindello/djiclireframe/tests/osv_example/CAM_20260819204151_0011_D.OSV
+2026-08-20 16:32:21,745 - __main__ - INFO - Please ensure the sample OSV file is available in osv_example/
+2026-08-20 16:32:41,656 - __main__ - INFO - Starting comprehensive test suite...
+2026-08-20 16:32:41,656 - __main__ - INFO - Setting up test with OSV file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
+2026-08-20 16:32:41,656 - __main__ - INFO - Initializing frame extractor...
+2026-08-20 16:32:41,656 - dji_osv_converter.frame_decoder - DEBUG - Auto-detecting best decoder backend...
+2026-08-20 16:32:41,717 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
+2026-08-20 16:32:41,717 - dji_osv_converter.decoder.detect - DEBUG - PyObjC not available for VideoToolbox
+2026-08-20 16:32:41,717 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': False}
+2026-08-20 16:32:41,717 - dji_osv_converter.decoder.detect - INFO - Auto-selected decoder backend: ffmpeg
+2026-08-20 16:32:41,760 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
+2026-08-20 16:32:41,760 - dji_osv_converter.decoder.detect - DEBUG - PyObjC not available for VideoToolbox
+2026-08-20 16:32:41,760 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': False}
+2026-08-20 16:32:41,813 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg available, VideoToolbox support: True
+2026-08-20 16:32:41,814 - dji_osv_converter.decoder.factory - INFO - Initialized ffmpeg decoder backend
+2026-08-20 16:32:41,814 - dji_osv_converter.frame_decoder - INFO - Decoder backend ffmpeg initialized
+2026-08-20 16:32:41,814 - dji_osv_converter.frame_decoder - INFO - Using ffmpeg decoder backend
+2026-08-20 16:32:41,814 - dji_osv_converter.decoder.ffmpeg - INFO - Opening file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
+2026-08-20 16:32:42,003 - dji_osv_converter.decoder.ffmpeg - INFO - Found 2 video streams
+2026-08-20 16:32:42,003 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 0: 3840×3840 @ 29.97fps, codec=hevc
+2026-08-20 16:32:42,003 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 1: 3840×3840 @ 29.97fps, codec=hevc
+2026-08-20 16:32:42,003 - dji_osv_converter.decoder.ffmpeg - DEBUG - Starting FFmpeg: ffmpeg -hwaccel videotoolbox -i /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV -pix_fmt rgb24 -f rawvideo -
+2026-08-20 16:32:42,007 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg subprocess started with VideoToolbox hardware acceleration
+2026-08-20 16:32:42,007 - dji_osv_converter.decoder.ffmpeg - DEBUG - FFmpeg reader thread started
+2026-08-20 16:32:42,007 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg decoder ready
+2026-08-20 16:32:42,007 - __main__ - INFO - Initializing optical flow stitcher...
+2026-08-20 16:32:42,008 - dji_osv_converter.stitch_optical_flow - INFO - OpticalFlowStitcher initialized: warping=True, poisson=True, seam_method=flow_guided, overlap=400px
+2026-08-20 16:32:42,008 - __main__ - INFO - Setup completed successfully
+2026-08-20 16:32:42,008 - __main__ - INFO - Extracting 5 frames from OSV file...
+2026-08-20 16:32:42,008 - __main__ - INFO - Total frames available: 4724
+2026-08-20 16:32:42,008 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 0] Waiting for frame from 2 streams
+2026-08-20 16:32:42,565 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 0] Ready in 554ms, 88473600 bytes
+2026-08-20 16:32:42,574 - __main__ - INFO - Extracted frame pair 1: (3840, 3840, 3), (3840, 3840, 3)
+2026-08-20 16:32:42,574 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 1] Waiting for frame from 2 streams
+2026-08-20 16:32:42,748 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 1] Ready in 174ms, 88473600 bytes
+2026-08-20 16:32:42,748 - __main__ - INFO - Extracted frame pair 2: (3840, 3840, 3), (3840, 3840, 3)
+2026-08-20 16:32:42,748 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 2] Waiting for frame from 2 streams
+2026-08-20 16:32:42,809 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 2] Ready in 60ms, 88473600 bytes
+2026-08-20 16:32:42,809 - __main__ - INFO - Extracted frame pair 3: (3840, 3840, 3), (3840, 3840, 3)
+2026-08-20 16:32:42,809 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 3] Waiting for frame from 2 streams
+2026-08-20 16:32:42,868 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 3] Ready in 59ms, 88473600 bytes
+2026-08-20 16:32:42,869 - __main__ - INFO - Extracted frame pair 4: (3840, 3840, 3), (3840, 3840, 3)
+2026-08-20 16:32:42,869 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 4] Waiting for frame from 2 streams
+2026-08-20 16:32:42,920 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 4] Ready in 51ms, 88473600 bytes
+2026-08-20 16:32:42,920 - __main__ - INFO - Extracted frame pair 5: (3840, 3840, 3), (3840, 3840, 3)
+2026-08-20 16:32:42,920 - __main__ - INFO - Successfully extracted 5 frame pairs in 0.91s
+2026-08-20 16:32:42,922 - __main__ - INFO - 
 --- Running: Optical Flow ---
-2026-08-20 16:11:43,539 - __main__ - INFO - Testing optical flow computation...
-2026-08-20 16:11:43,539 - __main__ - INFO - 
+2026-08-20 16:32:42,922 - __main__ - INFO - Testing optical flow computation...
+2026-08-20 16:32:42,922 - __main__ - INFO - 
 Testing optical flow on frame pair 1...
-2026-08-20 16:11:46,947 - __main__ - INFO -   Flow computed: shape=(3840, 3840, 2), time=3.369s
-2026-08-20 16:11:47,077 - __main__ - INFO -   Flow magnitude - min: 0.00, max: 362.34, mean: 6.36
-2026-08-20 16:11:47,454 - __main__ - DEBUG - Saved flow visualization: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/optical_flow_000.png
-2026-08-20 16:11:47,455 - __main__ - INFO - Result: PASS
-2026-08-20 16:11:47,455 - __main__ - INFO - 
+2026-08-20 16:32:49,162 - __main__ - INFO -   Flow computed: shape=(3840, 3840, 2), time=6.168s
+2026-08-20 16:32:49,669 - __main__ - INFO -   Flow magnitude - min: 0.00, max: 362.34, mean: 6.36
+2026-08-20 16:32:49,894 - __main__ - DEBUG - Saved flow visualization: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/optical_flow_000.png
+2026-08-20 16:32:49,895 - __main__ - INFO - Result: PASS
+2026-08-20 16:32:49,895 - __main__ - INFO - 
 --- Running: Warping ---
-2026-08-20 16:11:47,455 - __main__ - INFO - Testing image warping...
-2026-08-20 16:11:47,455 - __main__ - INFO - 
+2026-08-20 16:32:49,895 - __main__ - INFO - Testing image warping...
+2026-08-20 16:32:49,895 - __main__ - INFO - 
 Testing warping on frame pair 1...
-2026-08-20 16:11:49,452 - __main__ - INFO -   Warping completed: time=0.130s
-2026-08-20 16:11:49,770 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/frame0_original_000.png
-2026-08-20 16:11:50,113 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/frame0_warped_000.png
-2026-08-20 16:11:50,113 - __main__ - INFO - Result: PASS
-2026-08-20 16:11:50,114 - __main__ - INFO - 
+2026-08-20 16:32:52,249 - __main__ - INFO -   Warping completed: time=0.234s
+2026-08-20 16:32:52,538 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/frame0_original_000.png
+2026-08-20 16:32:53,008 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/frame0_warped_000.png
+2026-08-20 16:32:53,009 - __main__ - INFO - Result: PASS
+2026-08-20 16:32:53,009 - __main__ - INFO - 
 --- Running: Full Pipeline ---
-2026-08-20 16:11:50,114 - __main__ - INFO - Testing complete stitching pipeline...
-2026-08-20 16:11:50,114 - __main__ - INFO - 
+2026-08-20 16:32:53,009 - __main__ - INFO - Testing complete stitching pipeline...
+2026-08-20 16:32:53,009 - __main__ - INFO - 
 Stitching frame pair 1...
-2026-08-20 16:11:50,115 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:11:52,537 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:11:53,320 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.205s
-2026-08-20 16:11:53,321 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:11:53,858 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.538s
-2026-08-20 16:11:53,891 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:11:54,758 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:11:54,767 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:11:54,791 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.024s
-2026-08-20 16:11:54,791 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.677s (flow: 3.205s, warp: 0.538s, blend: 0.024s)
-2026-08-20 16:11:54,791 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.677s
-2026-08-20 16:11:54,791 - __main__ - INFO -   Metrics: flow=3.205s, warp=0.538s, blend=0.024s
-2026-08-20 16:11:55,448 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_000.png
-2026-08-20 16:11:55,448 - __main__ - INFO - 
+2026-08-20 16:32:53,009 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:32:54,015 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:32:56,438 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.430s
+2026-08-20 16:32:56,439 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:32:56,631 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.192s
+2026-08-20 16:32:56,631 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:32:57,275 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:32:57,338 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:32:57,357 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.019s
+2026-08-20 16:32:57,357 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.349s (flow: 3.430s, warp: 0.192s, blend: 0.019s)
+2026-08-20 16:32:57,357 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.349s
+2026-08-20 16:32:57,357 - __main__ - INFO -   Metrics: flow=3.430s, warp=0.192s, blend=0.019s
+2026-08-20 16:32:58,243 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/stitched_output_000.png
+2026-08-20 16:32:58,243 - __main__ - INFO - 
 Stitching frame pair 2...
-2026-08-20 16:11:55,448 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:11:57,686 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:00,119 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 4.671s
-2026-08-20 16:12:00,119 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:00,359 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.240s
-2026-08-20 16:12:00,359 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:01,159 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:01,166 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:01,184 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:12:01,184 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 5.736s (flow: 4.671s, warp: 0.240s, blend: 0.017s)
-2026-08-20 16:12:01,184 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 5.736s
-2026-08-20 16:12:01,184 - __main__ - INFO -   Metrics: flow=4.671s, warp=0.240s, blend=0.017s
-2026-08-20 16:12:01,850 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_001.png
-2026-08-20 16:12:01,851 - __main__ - INFO - 
+2026-08-20 16:32:58,243 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:32:59,118 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:01,950 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.706s
+2026-08-20 16:33:01,950 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:02,184 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.234s
+2026-08-20 16:33:02,184 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:02,899 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:02,925 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:02,942 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
+2026-08-20 16:33:02,942 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.699s (flow: 3.706s, warp: 0.234s, blend: 0.017s)
+2026-08-20 16:33:02,942 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.699s
+2026-08-20 16:33:02,942 - __main__ - INFO -   Metrics: flow=3.706s, warp=0.234s, blend=0.017s
+2026-08-20 16:33:03,572 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/stitched_output_001.png
+2026-08-20 16:33:03,572 - __main__ - INFO - 
 Stitching frame pair 3...
-2026-08-20 16:12:01,851 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:03,510 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:05,157 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.306s
-2026-08-20 16:12:05,157 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:05,362 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.206s
-2026-08-20 16:12:05,363 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:06,112 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:06,134 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:06,153 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
-2026-08-20 16:12:06,153 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.303s (flow: 3.306s, warp: 0.206s, blend: 0.018s)
-2026-08-20 16:12:06,153 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.303s
-2026-08-20 16:12:06,153 - __main__ - INFO -   Metrics: flow=3.306s, warp=0.206s, blend=0.018s
-2026-08-20 16:12:06,788 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_002.png
-2026-08-20 16:12:06,788 - __main__ - INFO - 
+2026-08-20 16:33:03,572 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:04,265 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:06,620 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.048s
+2026-08-20 16:33:06,620 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:06,737 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.117s
+2026-08-20 16:33:06,737 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:07,387 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:07,414 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:07,433 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.019s
+2026-08-20 16:33:07,433 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 3.861s (flow: 3.048s, warp: 0.117s, blend: 0.019s)
+2026-08-20 16:33:07,434 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 3.861s
+2026-08-20 16:33:07,434 - __main__ - INFO -   Metrics: flow=3.048s, warp=0.117s, blend=0.019s
+2026-08-20 16:33:08,173 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/stitched_output_002.png
+2026-08-20 16:33:08,173 - __main__ - INFO - 
 Stitching frame pair 4...
-2026-08-20 16:12:06,788 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:08,628 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:10,073 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.285s
-2026-08-20 16:12:10,073 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:10,282 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.209s
-2026-08-20 16:12:10,282 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:11,056 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:11,064 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:11,085 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.021s
-2026-08-20 16:12:11,086 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.298s (flow: 3.285s, warp: 0.209s, blend: 0.021s)
-2026-08-20 16:12:11,086 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.298s
-2026-08-20 16:12:11,086 - __main__ - INFO -   Metrics: flow=3.285s, warp=0.209s, blend=0.021s
-2026-08-20 16:12:11,767 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_003.png
-2026-08-20 16:12:11,767 - __main__ - INFO - 
+2026-08-20 16:33:08,173 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:09,333 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:12,057 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.883s
+2026-08-20 16:33:12,057 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:12,380 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.322s
+2026-08-20 16:33:12,381 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:13,180 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:13,199 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:13,217 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
+2026-08-20 16:33:13,217 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 5.043s (flow: 3.883s, warp: 0.322s, blend: 0.018s)
+2026-08-20 16:33:13,217 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 5.043s
+2026-08-20 16:33:13,217 - __main__ - INFO -   Metrics: flow=3.883s, warp=0.322s, blend=0.018s
+2026-08-20 16:33:13,848 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/stitched_output_003.png
+2026-08-20 16:33:13,848 - __main__ - INFO - 
 Stitching frame pair 5...
-2026-08-20 16:12:11,767 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:13,827 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:14,815 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.048s
-2026-08-20 16:12:14,815 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:15,024 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.208s
-2026-08-20 16:12:15,024 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:15,787 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:15,809 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:15,827 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:12:15,827 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.060s (flow: 3.048s, warp: 0.208s, blend: 0.017s)
-2026-08-20 16:12:15,827 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.060s
-2026-08-20 16:12:15,827 - __main__ - INFO -   Metrics: flow=3.048s, warp=0.208s, blend=0.017s
-2026-08-20 16:12:16,489 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_004.png
-2026-08-20 16:12:16,490 - __main__ - INFO - Stitching pipeline test completed successfully
-2026-08-20 16:12:16,490 - __main__ - INFO - Result: PASS
-2026-08-20 16:12:16,490 - __main__ - INFO - 
+2026-08-20 16:33:13,848 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:14,683 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:17,002 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.153s
+2026-08-20 16:33:17,002 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:17,149 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.147s
+2026-08-20 16:33:17,149 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:17,791 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:17,799 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:17,817 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
+2026-08-20 16:33:17,817 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 3.969s (flow: 3.153s, warp: 0.147s, blend: 0.017s)
+2026-08-20 16:33:17,817 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 3.969s
+2026-08-20 16:33:17,817 - __main__ - INFO -   Metrics: flow=3.153s, warp=0.147s, blend=0.017s
+2026-08-20 16:33:18,432 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/stitched_output_004.png
+2026-08-20 16:33:18,433 - __main__ - INFO - Stitching pipeline test completed successfully
+2026-08-20 16:33:18,434 - __main__ - INFO - Result: PASS
+2026-08-20 16:33:18,434 - __main__ - INFO - 
 --- Running: Quality Metrics ---
-2026-08-20 16:12:16,490 - __main__ - INFO - Computing quality metrics...
-2026-08-20 16:12:16,490 - __main__ - INFO - 
+2026-08-20 16:33:18,435 - __main__ - INFO - Computing quality metrics...
+2026-08-20 16:33:18,435 - __main__ - INFO - 
 Computing metrics for frame pair 1...
-2026-08-20 16:12:16,490 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:19,111 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:19,517 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.027s
-2026-08-20 16:12:19,518 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:19,750 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.233s
-2026-08-20 16:12:19,751 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:20,526 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:20,542 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:20,560 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
-2026-08-20 16:12:20,560 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.070s (flow: 3.027s, warp: 0.233s, blend: 0.018s)
-2026-08-20 16:12:21,145 - __main__ - INFO -   Output PSNR: 18.96 dB
-2026-08-20 16:12:23,635 - __main__ - INFO -   Output SSIM: 0.7779
-2026-08-20 16:12:23,636 - __main__ - INFO - 
+2026-08-20 16:33:18,435 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:19,834 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:21,217 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 2.782s
+2026-08-20 16:33:21,217 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:21,307 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.091s
+2026-08-20 16:33:21,307 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:21,945 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:21,951 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:21,968 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
+2026-08-20 16:33:21,968 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 3.533s (flow: 2.782s, warp: 0.091s, blend: 0.017s)
+2026-08-20 16:33:22,799 - __main__ - INFO -   Output PSNR: 18.96 dB
+2026-08-20 16:33:25,045 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:26,847 - __main__ - INFO -   Output SSIM: 0.7779
+2026-08-20 16:33:26,848 - __main__ - INFO - 
 Computing metrics for frame pair 2...
-2026-08-20 16:12:23,636 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:24,242 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:26,810 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.174s
-2026-08-20 16:12:26,811 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:26,882 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.071s
-2026-08-20 16:12:26,882 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:27,631 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:27,650 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:27,668 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:12:27,668 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.032s (flow: 3.174s, warp: 0.071s, blend: 0.017s)
-2026-08-20 16:12:27,788 - __main__ - INFO -   Output PSNR: 19.42 dB
-2026-08-20 16:12:29,369 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:29,769 - __main__ - INFO -   Output SSIM: 0.7922
-2026-08-20 16:12:29,769 - __main__ - INFO - 
+2026-08-20 16:33:26,848 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:30,336 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:30,760 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.912s
+2026-08-20 16:33:30,760 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:30,879 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.119s
+2026-08-20 16:33:30,879 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:31,541 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:31,574 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:31,592 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.019s
+2026-08-20 16:33:31,592 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.745s (flow: 3.912s, warp: 0.119s, blend: 0.019s)
+2026-08-20 16:33:31,783 - __main__ - INFO -   Output PSNR: 19.42 dB
+2026-08-20 16:33:35,343 - __main__ - INFO -   Output SSIM: 0.7922
+2026-08-20 16:33:35,344 - __main__ - INFO - 
 Computing metrics for frame pair 3...
-2026-08-20 16:12:29,769 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:32,977 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.209s
-2026-08-20 16:12:32,978 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:33,052 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.074s
-2026-08-20 16:12:33,052 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:33,812 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:33,825 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:33,842 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:12:33,842 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.073s (flow: 3.209s, warp: 0.074s, blend: 0.017s)
-2026-08-20 16:12:34,004 - __main__ - INFO -   Output PSNR: 19.32 dB
-2026-08-20 16:12:34,429 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:35,807 - __main__ - INFO -   Output SSIM: 0.7834
-2026-08-20 16:12:35,808 - __main__ - INFO - 
+2026-08-20 16:33:35,344 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:35,771 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:40,553 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 5.209s
+2026-08-20 16:33:40,554 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:40,689 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.136s
+2026-08-20 16:33:40,689 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:41,340 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:41,347 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:41,365 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
+2026-08-20 16:33:41,365 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 6.021s (flow: 5.209s, warp: 0.136s, blend: 0.017s)
+2026-08-20 16:33:41,516 - __main__ - INFO -   Output PSNR: 19.32 dB
+2026-08-20 16:33:41,757 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:44,937 - __main__ - INFO -   Output SSIM: 0.7834
+2026-08-20 16:33:44,939 - __main__ - INFO - 
 Computing metrics for frame pair 4...
-2026-08-20 16:12:35,808 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:38,636 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 2.828s
-2026-08-20 16:12:38,636 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:39,088 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.452s
-2026-08-20 16:12:39,089 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:39,865 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:39,880 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:39,897 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
-2026-08-20 16:12:39,897 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.090s (flow: 2.828s, warp: 0.452s, blend: 0.018s)
-2026-08-20 16:12:40,014 - __main__ - INFO -   Output PSNR: 19.45 dB
-2026-08-20 16:12:40,135 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:42,906 - __main__ - INFO -   Output SSIM: 0.7818
-2026-08-20 16:12:42,906 - __main__ - INFO - 
+2026-08-20 16:33:44,940 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:47,503 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:48,557 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.618s
+2026-08-20 16:33:48,558 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:48,703 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.146s
+2026-08-20 16:33:48,703 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:49,378 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:49,402 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:49,421 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
+2026-08-20 16:33:49,421 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.482s (flow: 3.618s, warp: 0.146s, blend: 0.018s)
+2026-08-20 16:33:49,553 - __main__ - INFO -   Output PSNR: 19.45 dB
+2026-08-20 16:33:51,969 - __main__ - INFO -   Output SSIM: 0.7818
+2026-08-20 16:33:51,969 - __main__ - INFO - 
 Computing metrics for frame pair 5...
-2026-08-20 16:12:42,906 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:45,226 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:45,677 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 2.771s
-2026-08-20 16:12:45,677 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:45,760 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.083s
-2026-08-20 16:12:45,761 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:46,574 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:46,597 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:46,615 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:12:46,615 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 3.709s (flow: 2.771s, warp: 0.083s, blend: 0.017s)
-2026-08-20 16:12:46,730 - __main__ - INFO -   Output PSNR: 19.90 dB
-2026-08-20 16:12:48,787 - __main__ - INFO -   Output SSIM: 0.7829
-2026-08-20 16:12:49,035 - __main__ - INFO - Result: PASS
-2026-08-20 16:12:49,035 - __main__ - INFO - 
+2026-08-20 16:33:51,969 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:52,935 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:33:55,229 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.260s
+2026-08-20 16:33:55,229 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:33:55,377 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.147s
+2026-08-20 16:33:55,377 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:33:56,038 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:33:56,046 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:33:56,064 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
+2026-08-20 16:33:56,064 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.095s (flow: 3.260s, warp: 0.147s, blend: 0.018s)
+2026-08-20 16:33:56,192 - __main__ - INFO -   Output PSNR: 19.90 dB
+2026-08-20 16:33:58,074 - __main__ - INFO -   Output SSIM: 0.7829
+2026-08-20 16:33:58,077 - __main__ - INFO - Result: PASS
+2026-08-20 16:33:58,077 - __main__ - INFO - 
 --- Running: Edge Cases ---
-2026-08-20 16:12:49,035 - __main__ - INFO - Testing edge cases...
-2026-08-20 16:12:49,035 - __main__ - INFO - Test 1: Wrong frame size...
-2026-08-20 16:12:49,045 - dji_osv_converter.stitch_optical_flow - WARNING - Unexpected frame shape: (1920, 1920, 3), (1920, 1920, 3)
-2026-08-20 16:12:49,045 - __main__ - INFO -   PASS: Wrong size handled correctly
-2026-08-20 16:12:49,045 - __main__ - INFO - Test 2: Wrong dtype...
-2026-08-20 16:12:49,057 - dji_osv_converter.stitch_optical_flow - WARNING - Expected uint8, got float32, float32
-2026-08-20 16:12:49,057 - __main__ - INFO -   PASS: Wrong dtype handled correctly
-2026-08-20 16:12:49,057 - __main__ - INFO - Test 3: Black frames...
-2026-08-20 16:12:49,070 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:12:50,285 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:12:52,308 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.237s
-2026-08-20 16:12:52,308 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:12:52,399 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.091s
-2026-08-20 16:12:52,399 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:12:53,441 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:12:53,464 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:12:53,483 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.019s
-2026-08-20 16:12:53,483 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.413s (flow: 3.237s, warp: 0.091s, blend: 0.019s)
-2026-08-20 16:12:53,483 - __main__ - INFO -   PASS: Black frames processed (output shape: (3840, 7680, 3))
-2026-08-20 16:12:53,483 - __main__ - INFO - Edge case testing completed
-2026-08-20 16:12:53,483 - __main__ - INFO - Result: PASS
-2026-08-20 16:12:53,498 - __main__ - INFO - 
+2026-08-20 16:33:58,077 - __main__ - INFO - Testing edge cases...
+2026-08-20 16:33:58,077 - __main__ - INFO - Test 1: Wrong frame size...
+2026-08-20 16:33:58,079 - dji_osv_converter.stitch_optical_flow - WARNING - Unexpected frame shape: (1920, 1920, 3), (1920, 1920, 3)
+2026-08-20 16:33:58,079 - __main__ - INFO -   PASS: Wrong size handled correctly
+2026-08-20 16:33:58,080 - __main__ - INFO - Test 2: Wrong dtype...
+2026-08-20 16:33:58,085 - dji_osv_converter.stitch_optical_flow - WARNING - Expected uint8, got float32, float32
+2026-08-20 16:33:58,085 - __main__ - INFO -   PASS: Wrong dtype handled correctly
+2026-08-20 16:33:58,085 - __main__ - INFO - Test 3: Black frames...
+2026-08-20 16:33:58,092 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
+2026-08-20 16:33:58,386 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
+2026-08-20 16:34:01,344 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.253s
+2026-08-20 16:34:01,345 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
+2026-08-20 16:34:01,424 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.080s
+2026-08-20 16:34:01,424 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
+2026-08-20 16:34:02,046 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
+2026-08-20 16:34:02,056 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
+2026-08-20 16:34:02,073 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
+2026-08-20 16:34:02,073 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 3.982s (flow: 3.253s, warp: 0.080s, blend: 0.017s)
+2026-08-20 16:34:02,074 - __main__ - INFO -   PASS: Black frames processed (output shape: (3840, 7680, 3))
+2026-08-20 16:34:02,074 - __main__ - INFO - Edge case testing completed
+2026-08-20 16:34:02,074 - __main__ - INFO - Result: PASS
+2026-08-20 16:34:02,098 - __main__ - INFO - 
 ================================================================================
 OPTICAL FLOW STITCHING TEST REPORT
 ================================================================================
 
-Test Date: 2026-08-20 16:12:53
+Test Date: 2026-08-20 16:34:02
 OSV File: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-Output Directory: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow
+Output Directory: /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output
 
 [FRAME EXTRACTION]
   Frames extracted: 5
-  Total extraction time: 0.85s
+  Total extraction time: 0.91s
   Avg frame size: (3840, 3840, 3)
 
 [PERFORMANCE]
   Frames stitched: 5
-  Avg stitch time: 4.615s
-  Avg flow time: 3.503s
-  Avg warp time: 0.280s
-  Avg blend time: 0.020s
-  Throughput: 0.22 fps
-
-[QUALITY METRICS]
-  Avg PSNR: 19.41 dB
-  Min PSNR: 18.96 dB
-  Max PSNR: 19.90 dB
-  Avg SSIM: 0.7836
-  Min SSIM: 0.7779
-  Max SSIM: 0.7922
-
-[OUTPUT FILES]
-  Generated images: 8
-    - frame0_original_000.png
-    - frame0_warped_000.png
-    - optical_flow_000.png
-    - stitched_output_000.png
-    - stitched_output_001.png
-    - stitched_output_002.png
-    - stitched_output_003.png
-    - stitched_output_004.png
-
-================================================================================
-2026-08-20 16:12:53,499 - __main__ - INFO - Report saved to /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/test_report.txt
-2026-08-20 16:12:53,499 - __main__ - INFO - 
---- TEST RESULTS SUMMARY ---
-2026-08-20 16:12:53,499 - __main__ - INFO -   Optical Flow: PASS
-2026-08-20 16:12:53,499 - __main__ - INFO -   Warping: PASS
-2026-08-20 16:12:53,499 - __main__ - INFO -   Full Pipeline: PASS
-2026-08-20 16:12:53,499 - __main__ - INFO -   Quality Metrics: PASS
-2026-08-20 16:12:53,499 - __main__ - INFO -   Edge Cases: PASS
-2026-08-20 16:12:53,499 - __main__ - INFO - 
-✓ All tests passed!
-2026-08-20 16:12:56,664 - __main__ - INFO - Starting comprehensive test suite...
-2026-08-20 16:12:56,665 - __main__ - INFO - Setting up test with OSV file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-2026-08-20 16:12:56,665 - __main__ - INFO - Initializing frame extractor...
-2026-08-20 16:12:56,665 - dji_osv_converter.frame_decoder - DEBUG - Auto-detecting best decoder backend...
-2026-08-20 16:12:56,718 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
-2026-08-20 16:12:57,002 - dji_osv_converter.decoder.detect - DEBUG - VideoToolbox framework available
-2026-08-20 16:12:57,002 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': True}
-2026-08-20 16:12:57,002 - dji_osv_converter.decoder.detect - INFO - Auto-selected decoder backend: ffmpeg
-2026-08-20 16:12:57,052 - dji_osv_converter.decoder.detect - DEBUG - FFmpeg available, hardware acceleration: True
-2026-08-20 16:12:57,068 - dji_osv_converter.decoder.detect - DEBUG - VideoToolbox framework available
-2026-08-20 16:12:57,068 - dji_osv_converter.decoder.detect - INFO - Decoder detection: {'cpu': True, 'ffmpeg': True, 'videotoolbox': True}
-2026-08-20 16:12:57,126 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg available, VideoToolbox support: True
-2026-08-20 16:12:57,126 - dji_osv_converter.decoder.factory - INFO - Initialized ffmpeg decoder backend
-2026-08-20 16:12:57,126 - dji_osv_converter.frame_decoder - INFO - Decoder backend ffmpeg initialized
-2026-08-20 16:12:57,126 - dji_osv_converter.frame_decoder - INFO - Using ffmpeg decoder backend
-2026-08-20 16:12:57,126 - dji_osv_converter.decoder.ffmpeg - INFO - Opening file: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-2026-08-20 16:12:57,133 - dji_osv_converter.decoder.ffmpeg - INFO - Found 2 video streams
-2026-08-20 16:12:57,133 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 0: 3840×3840 @ 29.97fps, codec=hevc
-2026-08-20 16:12:57,134 - dji_osv_converter.decoder.ffmpeg - INFO -   Stream 1: 3840×3840 @ 29.97fps, codec=hevc
-2026-08-20 16:12:57,134 - dji_osv_converter.decoder.ffmpeg - DEBUG - Starting FFmpeg: ffmpeg -hwaccel videotoolbox -i /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV -pix_fmt rgb24 -f rawvideo -
-2026-08-20 16:12:57,138 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg subprocess started with VideoToolbox hardware acceleration
-2026-08-20 16:12:57,138 - dji_osv_converter.decoder.ffmpeg - DEBUG - FFmpeg reader thread started
-2026-08-20 16:12:57,138 - dji_osv_converter.decoder.ffmpeg - INFO - FFmpeg decoder ready
-2026-08-20 16:12:57,138 - __main__ - INFO - Initializing optical flow stitcher...
-2026-08-20 16:12:57,138 - dji_osv_converter.stitch_optical_flow - INFO - OpticalFlowStitcher initialized: warping=True, poisson=True, seam_method=flow_guided, overlap=400px
-2026-08-20 16:12:57,138 - __main__ - INFO - Setup completed successfully
-2026-08-20 16:12:57,138 - __main__ - INFO - Extracting 5 frames from OSV file...
-2026-08-20 16:12:57,138 - __main__ - INFO - Total frames available: 4724
-2026-08-20 16:12:57,138 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 0] Waiting for frame from 2 streams
-2026-08-20 16:12:57,432 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 0] Ready in 293ms, 88473600 bytes
-2026-08-20 16:12:57,432 - __main__ - INFO - Extracted frame pair 1: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:12:57,432 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 1] Waiting for frame from 2 streams
-2026-08-20 16:12:57,497 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 1] Ready in 65ms, 88473600 bytes
-2026-08-20 16:12:57,497 - __main__ - INFO - Extracted frame pair 2: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:12:57,497 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 2] Waiting for frame from 2 streams
-2026-08-20 16:12:57,568 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 2] Ready in 72ms, 88473600 bytes
-2026-08-20 16:12:57,569 - __main__ - INFO - Extracted frame pair 3: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:12:57,569 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 3] Waiting for frame from 2 streams
-2026-08-20 16:12:57,654 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 3] Ready in 85ms, 88473600 bytes
-2026-08-20 16:12:57,654 - __main__ - INFO - Extracted frame pair 4: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:12:57,654 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 4] Waiting for frame from 2 streams
-2026-08-20 16:12:57,701 - dji_osv_converter.decoder.ffmpeg - DEBUG - [FRAME 4] Ready in 47ms, 88473600 bytes
-2026-08-20 16:12:57,701 - __main__ - INFO - Extracted frame pair 5: (3840, 3840, 3), (3840, 3840, 3)
-2026-08-20 16:12:57,701 - __main__ - INFO - Successfully extracted 5 frame pairs in 0.56s
-2026-08-20 16:12:57,701 - __main__ - INFO - 
---- Running: Optical Flow ---
-2026-08-20 16:12:57,701 - __main__ - INFO - Testing optical flow computation...
-2026-08-20 16:12:57,701 - __main__ - INFO - 
-Testing optical flow on frame pair 1...
-2026-08-20 16:13:02,207 - __main__ - INFO -   Flow computed: shape=(3840, 3840, 2), time=4.493s
-2026-08-20 16:13:02,308 - __main__ - INFO -   Flow magnitude - min: 0.00, max: 362.34, mean: 6.36
-2026-08-20 16:13:02,597 - __main__ - DEBUG - Saved flow visualization: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/optical_flow_000.png
-2026-08-20 16:13:02,597 - __main__ - INFO - Result: PASS
-2026-08-20 16:13:02,597 - __main__ - INFO - 
---- Running: Warping ---
-2026-08-20 16:13:02,597 - __main__ - INFO - Testing image warping...
-2026-08-20 16:13:02,597 - __main__ - INFO - 
-Testing warping on frame pair 1...
-2026-08-20 16:13:04,711 - __main__ - INFO -   Warping completed: time=0.207s
-2026-08-20 16:13:05,029 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/frame0_original_000.png
-2026-08-20 16:13:05,376 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/frame0_warped_000.png
-2026-08-20 16:13:05,376 - __main__ - INFO - Result: PASS
-2026-08-20 16:13:05,376 - __main__ - INFO - 
---- Running: Full Pipeline ---
-2026-08-20 16:13:05,376 - __main__ - INFO - Testing complete stitching pipeline...
-2026-08-20 16:13:05,376 - __main__ - INFO - 
-Stitching frame pair 1...
-2026-08-20 16:13:05,379 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:07,054 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:08,568 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.188s
-2026-08-20 16:13:08,569 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:08,946 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.377s
-2026-08-20 16:13:08,946 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:09,766 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:09,774 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:09,793 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.019s
-2026-08-20 16:13:09,793 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.416s (flow: 3.188s, warp: 0.377s, blend: 0.019s)
-2026-08-20 16:13:09,793 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.417s
-2026-08-20 16:13:09,793 - __main__ - INFO -   Metrics: flow=3.188s, warp=0.377s, blend=0.019s
-2026-08-20 16:13:10,433 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_000.png
-2026-08-20 16:13:10,433 - __main__ - INFO - 
-Stitching frame pair 2...
-2026-08-20 16:13:10,433 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:12,134 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:13,690 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.257s
-2026-08-20 16:13:13,690 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:13,901 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.211s
-2026-08-20 16:13:13,901 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:14,675 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:14,685 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:14,702 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:13:14,702 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.269s (flow: 3.257s, warp: 0.211s, blend: 0.017s)
-2026-08-20 16:13:14,703 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.269s
-2026-08-20 16:13:14,703 - __main__ - INFO -   Metrics: flow=3.257s, warp=0.211s, blend=0.017s
-2026-08-20 16:13:15,354 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_001.png
-2026-08-20 16:13:15,354 - __main__ - INFO - 
-Stitching frame pair 3...
-2026-08-20 16:13:15,354 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:17,348 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:18,150 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 2.796s
-2026-08-20 16:13:18,150 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:18,341 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.190s
-2026-08-20 16:13:18,342 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:19,134 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:19,147 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:19,166 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.019s
-2026-08-20 16:13:19,166 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 3.812s (flow: 2.796s, warp: 0.190s, blend: 0.019s)
-2026-08-20 16:13:19,166 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 3.812s
-2026-08-20 16:13:19,166 - __main__ - INFO -   Metrics: flow=2.796s, warp=0.190s, blend=0.019s
-2026-08-20 16:13:19,842 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_002.png
-2026-08-20 16:13:19,843 - __main__ - INFO - 
-Stitching frame pair 4...
-2026-08-20 16:13:19,843 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:22,407 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:24,623 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 4.780s
-2026-08-20 16:13:24,623 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:25,036 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.413s
-2026-08-20 16:13:25,037 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:25,866 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:25,875 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:25,893 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
-2026-08-20 16:13:25,893 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 6.051s (flow: 4.780s, warp: 0.413s, blend: 0.018s)
-2026-08-20 16:13:25,893 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 6.051s
-2026-08-20 16:13:25,893 - __main__ - INFO -   Metrics: flow=4.780s, warp=0.413s, blend=0.018s
-2026-08-20 16:13:26,534 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_003.png
-2026-08-20 16:13:26,534 - __main__ - INFO - 
-Stitching frame pair 5...
-2026-08-20 16:13:26,534 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:28,329 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:29,724 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.191s
-2026-08-20 16:13:29,725 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:29,904 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.179s
-2026-08-20 16:13:29,904 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:30,677 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:30,702 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:30,719 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:13:30,719 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.185s (flow: 3.191s, warp: 0.179s, blend: 0.017s)
-2026-08-20 16:13:30,719 - __main__ - INFO -   Output shape: (3840, 7680, 3), time: 4.186s
-2026-08-20 16:13:30,719 - __main__ - INFO -   Metrics: flow=3.191s, warp=0.179s, blend=0.017s
-2026-08-20 16:13:31,397 - __main__ - DEBUG - Saved: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/stitched_output_004.png
-2026-08-20 16:13:31,397 - __main__ - INFO - Stitching pipeline test completed successfully
-2026-08-20 16:13:31,397 - __main__ - INFO - Result: PASS
-2026-08-20 16:13:31,397 - __main__ - INFO - 
---- Running: Quality Metrics ---
-2026-08-20 16:13:31,397 - __main__ - INFO - Computing quality metrics...
-2026-08-20 16:13:31,397 - __main__ - INFO - 
-Computing metrics for frame pair 1...
-2026-08-20 16:13:31,397 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:33,655 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:34,908 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.510s
-2026-08-20 16:13:34,908 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:35,125 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.217s
-2026-08-20 16:13:35,125 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:35,931 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:35,939 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:35,956 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:13:35,956 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.559s (flow: 3.510s, warp: 0.217s, blend: 0.017s)
-2026-08-20 16:13:36,184 - __main__ - INFO -   Output PSNR: 18.96 dB
-2026-08-20 16:13:38,803 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:39,581 - __main__ - INFO -   Output SSIM: 0.7779
-2026-08-20 16:13:39,581 - __main__ - INFO - 
-Computing metrics for frame pair 2...
-2026-08-20 16:13:39,581 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:42,847 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.265s
-2026-08-20 16:13:42,847 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:42,922 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.076s
-2026-08-20 16:13:42,923 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:43,703 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:43,715 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:43,734 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
-2026-08-20 16:13:43,734 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.152s (flow: 3.265s, warp: 0.076s, blend: 0.018s)
-2026-08-20 16:13:43,904 - __main__ - INFO -   Output PSNR: 19.42 dB
-2026-08-20 16:13:44,907 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:46,624 - __main__ - INFO -   Output SSIM: 0.7922
-2026-08-20 16:13:46,626 - __main__ - INFO - 
-Computing metrics for frame pair 3...
-2026-08-20 16:13:46,666 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:50,087 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.421s
-2026-08-20 16:13:50,087 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:50,174 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.087s
-2026-08-20 16:13:50,174 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:51,018 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:51,028 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:51,046 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:13:51,046 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.380s (flow: 3.421s, warp: 0.087s, blend: 0.017s)
-2026-08-20 16:13:51,170 - __main__ - INFO -   Output PSNR: 19.32 dB
-2026-08-20 16:13:51,577 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:53,416 - __main__ - INFO -   Output SSIM: 0.7834
-2026-08-20 16:13:53,417 - __main__ - INFO - 
-Computing metrics for frame pair 4...
-2026-08-20 16:13:53,417 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:13:56,973 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:13:57,335 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.919s
-2026-08-20 16:13:57,336 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:13:57,487 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.151s
-2026-08-20 16:13:57,488 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:13:58,328 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:13:58,335 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:13:58,361 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.026s
-2026-08-20 16:13:58,361 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.945s (flow: 3.919s, warp: 0.151s, blend: 0.026s)
-2026-08-20 16:13:58,507 - __main__ - INFO -   Output PSNR: 19.45 dB
-2026-08-20 16:14:01,596 - __main__ - INFO -   Output SSIM: 0.7818
-2026-08-20 16:14:01,597 - __main__ - INFO - 
-Computing metrics for frame pair 5...
-2026-08-20 16:14:01,598 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:14:03,359 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:14:05,426 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.829s
-2026-08-20 16:14:05,426 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:14:05,528 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.101s
-2026-08-20 16:14:05,528 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:14:06,316 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:14:06,323 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:14:06,342 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.018s
-2026-08-20 16:14:06,342 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.744s (flow: 3.829s, warp: 0.101s, blend: 0.018s)
-2026-08-20 16:14:06,476 - __main__ - INFO -   Output PSNR: 19.90 dB
-2026-08-20 16:14:08,848 - dji_osv_converter.decoder.ffmpeg - WARNING - Frame queue full, dropping frame
-2026-08-20 16:14:09,376 - __main__ - INFO -   Output SSIM: 0.7829
-2026-08-20 16:14:09,379 - __main__ - INFO - Result: PASS
-2026-08-20 16:14:09,379 - __main__ - INFO - 
---- Running: Edge Cases ---
-2026-08-20 16:14:09,380 - __main__ - INFO - Testing edge cases...
-2026-08-20 16:14:09,380 - __main__ - INFO - Test 1: Wrong frame size...
-2026-08-20 16:14:09,399 - dji_osv_converter.stitch_optical_flow - WARNING - Unexpected frame shape: (1920, 1920, 3), (1920, 1920, 3)
-2026-08-20 16:14:09,399 - __main__ - INFO -   PASS: Wrong size handled correctly
-2026-08-20 16:14:09,399 - __main__ - INFO - Test 2: Wrong dtype...
-2026-08-20 16:14:09,411 - dji_osv_converter.stitch_optical_flow - WARNING - Expected uint8, got float32, float32
-2026-08-20 16:14:09,411 - __main__ - INFO -   PASS: Wrong dtype handled correctly
-2026-08-20 16:14:09,411 - __main__ - INFO - Test 3: Black frames...
-2026-08-20 16:14:09,419 - dji_osv_converter.stitch_optical_flow - DEBUG - Computing bidirectional optical flow...
-2026-08-20 16:14:12,720 - dji_osv_converter.stitch_optical_flow - DEBUG - Optical flow computed in 3.301s
-2026-08-20 16:14:12,720 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping images based on optical flow...
-2026-08-20 16:14:12,797 - dji_osv_converter.stitch_optical_flow - DEBUG - Warping completed in 0.077s
-2026-08-20 16:14:12,797 - dji_osv_converter.stitch_optical_flow - DEBUG - Detecting seam line using flow_guided method...
-2026-08-20 16:14:13,648 - dji_osv_converter.stitch_optical_flow - DEBUG - Creating equirectangular output...
-2026-08-20 16:14:13,659 - dji_osv_converter.stitch_optical_flow - DEBUG - Applying Poisson blending at seam line...
-2026-08-20 16:14:13,677 - dji_osv_converter.stitch_optical_flow - DEBUG - Poisson blending completed in 0.017s
-2026-08-20 16:14:13,677 - dji_osv_converter.stitch_optical_flow - INFO - Frame stitched successfully in 4.259s (flow: 3.301s, warp: 0.077s, blend: 0.017s)
-2026-08-20 16:14:13,677 - __main__ - INFO -   PASS: Black frames processed (output shape: (3840, 7680, 3))
-2026-08-20 16:14:13,677 - __main__ - INFO - Edge case testing completed
-2026-08-20 16:14:13,677 - __main__ - INFO - Result: PASS
-2026-08-20 16:14:13,698 - __main__ - INFO - 
-================================================================================
-OPTICAL FLOW STITCHING TEST REPORT
-================================================================================
-
-Test Date: 2026-08-20 16:14:13
-OSV File: /Users/zindello/repositories/zindello/djiclireframe/osv_example/CAM_20260819204151_0011_D.OSV
-Output Directory: /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow
-
-[FRAME EXTRACTION]
-  Frames extracted: 5
-  Total extraction time: 0.56s
-  Avg frame size: (3840, 3840, 3)
-
-[PERFORMANCE]
-  Frames stitched: 5
-  Avg stitch time: 4.547s
-  Avg flow time: 3.442s
-  Avg warp time: 0.274s
+  Avg stitch time: 4.384s
+  Avg flow time: 3.444s
+  Avg warp time: 0.202s
   Avg blend time: 0.018s
-  Throughput: 0.22 fps
+  Throughput: 0.23 fps
 
 [QUALITY METRICS]
   Avg PSNR: 19.41 dB
@@ -606,13 +283,13 @@ Output Directory: /Users/zindello/repositories/zindello/djiclireframe/test_outpu
     - stitched_output_004.png
 
 ================================================================================
-2026-08-20 16:14:13,699 - __main__ - INFO - Report saved to /Users/zindello/repositories/zindello/djiclireframe/test_output_optical_flow/test_report.txt
-2026-08-20 16:14:13,699 - __main__ - INFO - 
+2026-08-20 16:34:02,101 - __main__ - INFO - Report saved to /Users/zindello/repositories/zindello/djiclireframe/tests/optical_flow_output/test_report.txt
+2026-08-20 16:34:02,101 - __main__ - INFO - 
 --- TEST RESULTS SUMMARY ---
-2026-08-20 16:14:13,699 - __main__ - INFO -   Optical Flow: PASS
-2026-08-20 16:14:13,699 - __main__ - INFO -   Warping: PASS
-2026-08-20 16:14:13,699 - __main__ - INFO -   Full Pipeline: PASS
-2026-08-20 16:14:13,699 - __main__ - INFO -   Quality Metrics: PASS
-2026-08-20 16:14:13,699 - __main__ - INFO -   Edge Cases: PASS
-2026-08-20 16:14:13,699 - __main__ - INFO - 
+2026-08-20 16:34:02,101 - __main__ - INFO -   Optical Flow: PASS
+2026-08-20 16:34:02,101 - __main__ - INFO -   Warping: PASS
+2026-08-20 16:34:02,101 - __main__ - INFO -   Full Pipeline: PASS
+2026-08-20 16:34:02,101 - __main__ - INFO -   Quality Metrics: PASS
+2026-08-20 16:34:02,101 - __main__ - INFO -   Edge Cases: PASS
+2026-08-20 16:34:02,101 - __main__ - INFO - 
 ✓ All tests passed!

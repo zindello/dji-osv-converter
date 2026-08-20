@@ -32,97 +32,16 @@ FRAMEWORK_BINARY = FRAMEWORK_PATH / "Versions/A/DualStitcher"
 FRAMEWORK_RESOURCES = FRAMEWORK_PATH / "Versions/A/Resources/Stitcher-Mac.bundle/case_00"
 FRAMEWORKS_DIR = Path("/Applications/DJI Studio.app/Contents/Frameworks")
 
+# Get the path to dji_helper.py (this module's directory)
+_MODULE_DIR = Path(__file__).parent
+DJI_HELPER_SCRIPT = _MODULE_DIR / "dji_helper.py"
+
 
 class DualStitcherError(Exception):
     """Exception for DualStitcher API errors"""
     pass
 
 
-# Embedded helper script that runs in subprocess with proper environment
-STITCHER_SUBPROCESS_CODE = """
-import sys
-import json
-import pickle
-import ctypes
-from pathlib import Path
-import numpy as np
-
-# Set DYLD variables BEFORE importing anything
-FRAMEWORKS_DIR = "{frameworks_dir}"
-import os
-os.environ['DYLD_FRAMEWORK_PATH'] = FRAMEWORKS_DIR
-os.environ['DYLD_LIBRARY_PATH'] = FRAMEWORKS_DIR
-os.environ['DYLD_FALLBACK_FRAMEWORK_PATH'] = FRAMEWORKS_DIR
-os.environ['DYLD_FALLBACK_LIBRARY_PATH'] = FRAMEWORKS_DIR
-
-FRAMEWORK_BINARY = "{binary_path}"
-
-try:
-    # Now load the framework
-    lib = ctypes.CDLL(FRAMEWORK_BINARY, mode=0x9, use_errno=True)
-
-    # Define functions
-    lib.ML_ImageStitcherInit.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
-    lib.ML_ImageStitcherInit.restype = ctypes.c_int
-    lib.ML_ImageStitcherDeInit.argtypes = []
-    lib.ML_ImageStitcherDeInit.restype = ctypes.c_int
-    lib.ML_ImageStitcherProcessStepA.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.POINTER(ctypes.c_uint8), ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    lib.ML_ImageStitcherProcessStepA.restype = ctypes.c_int
-    lib.ML_ImageStitcherProcessStepB.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_int, ctypes.c_int]
-    lib.ML_ImageStitcherProcessStepB.restype = ctypes.c_int
-
-    # Read input frames from stdin
-    frame_data = sys.stdin.buffer.read()
-    frames = pickle.loads(frame_data)
-
-    frame_left = frames['left']
-    frame_right = frames['right']
-    param_path = frames['param_path']
-
-    # Ensure contiguous
-    frame_left = np.ascontiguousarray(frame_left)
-    frame_right = np.ascontiguousarray(frame_right)
-
-    # Initialize
-    result = lib.ML_ImageStitcherInit(b"", param_path.encode('utf-8'), b"")
-    if result != 0:
-        sys.stderr.write(f"Init failed: {{result}}\\n")
-        sys.exit(1)
-
-    # Process Step A
-    width, height = 3840, 3840
-    stride = width * 3
-    left_ptr = frame_left.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-    right_ptr = frame_right.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-
-    result_a = lib.ML_ImageStitcherProcessStepA(left_ptr, right_ptr, width, height, stride)
-    if result_a != 0:
-        sys.stderr.write(f"ProcessStepA failed: {{result_a}}\\n")
-        sys.exit(1)
-
-    # Process Step B
-    output_width, output_height = 7680, 3840
-    output_buffer = np.zeros((output_height, output_width, 3), dtype=np.uint8)
-    output_buffer = np.ascontiguousarray(output_buffer)
-    output_ptr = output_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-
-    result_b = lib.ML_ImageStitcherProcessStepB(output_ptr, output_width, output_height)
-    if result_b != 0:
-        sys.stderr.write(f"ProcessStepB failed: {{result_b}}\\n")
-        sys.exit(1)
-
-    # Cleanup
-    lib.ML_ImageStitcherDeInit()
-
-    # Output result
-    sys.stdout.buffer.write(pickle.dumps(output_buffer))
-
-except Exception as e:
-    sys.stderr.write(f"Error: {{e}}\\n")
-    import traceback
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
-"""
 
 
 class CalibrationData:
@@ -305,17 +224,12 @@ class DJIDualStitcher:
 
             logger.debug(f"Stitching frames via subprocess...")
 
-            # Prepare subprocess script
-            script = STITCHER_SUBPROCESS_CODE.format(
-                frameworks_dir=str(FRAMEWORKS_DIR),
-                binary_path=str(FRAMEWORK_BINARY),
-            )
-
             # Prepare input data
             input_data = {
                 'left': frame_left,
                 'right': frame_right,
                 'param_path': str(FRAMEWORK_RESOURCES),
+                'framework_path': str(FRAMEWORK_BINARY),
             }
             input_bytes = pickle.dumps(input_data)
 
@@ -323,20 +237,29 @@ class DJIDualStitcher:
             env = os.environ.copy()
             env['DYLD_FRAMEWORK_PATH'] = str(FRAMEWORKS_DIR)
             env['DYLD_LIBRARY_PATH'] = str(FRAMEWORKS_DIR)
+            env['DYLD_FALLBACK_FRAMEWORK_PATH'] = str(FRAMEWORKS_DIR)
+            env['DYLD_FALLBACK_LIBRARY_PATH'] = str(FRAMEWORKS_DIR)
 
             # Use the same Python executable as current process
             python_exe = sys.executable
             logger.debug(f"Using Python: {python_exe}")
+            logger.debug(f"Using helper script: {DJI_HELPER_SCRIPT}")
+
+            # Check if helper script exists
+            if not DJI_HELPER_SCRIPT.exists():
+                logger.error(f"Helper script not found: {DJI_HELPER_SCRIPT}")
+                return None
 
             proc = subprocess.Popen(
-                [python_exe, "-c", script],
+                [python_exe, str(DJI_HELPER_SCRIPT)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
             )
 
-            stdout, stderr = proc.communicate(input=input_bytes, timeout=60)
+            logger.debug("Subprocess started, waiting for stitching to complete...")
+            stdout, stderr = proc.communicate(input=input_bytes, timeout=120)
 
             if proc.returncode != 0:
                 stderr_str = stderr.decode('utf-8', errors='replace')
@@ -348,16 +271,21 @@ class DJIDualStitcher:
             try:
                 output = pickle.loads(stdout)
                 logger.info(f"Successfully stitched frames: {output.shape}")
+                logger.debug(f"Output value range: [{output.min()}, {output.max()}]")
                 return output
             except Exception as e:
                 logger.error(f"Failed to unpack result: {e}")
+                # Log stderr for debugging
+                stderr_str = stderr.decode('utf-8', errors='replace')
+                if stderr_str:
+                    logger.error(f"Helper stderr:\n{stderr_str}")
                 return None
 
         except subprocess.TimeoutExpired:
-            logger.error("Stitching subprocess timed out")
+            logger.error("Stitching subprocess timed out (>120 seconds)")
             return None
         except Exception as e:
-            logger.error(f"Stitching failed: {e}")
+            logger.error(f"Stitching failed: {e}", exc_info=True)
             return None
 
     def is_available(self) -> bool:
