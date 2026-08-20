@@ -178,19 +178,20 @@ class StitchingPipeline:
             # Step 6: Finalize encoding
             logger.info("Step 6: Finalizing encoding...")
 
-            # Signal EOF to FFmpeg and wait for completion
+            # Close stdin and wait for FFmpeg to finish (no communicate to avoid deadlock)
             try:
-                stdout, stderr = encoder_process.communicate(timeout=300)
-            except Exception as e:
-                logger.debug(f"Communicate error (expected if stdin closed): {e}")
-                encoder_process.wait(timeout=300)
+                encoder_process.stdin.close()
+            except:
+                pass
 
-            ret = encoder_process.returncode
+            try:
+                ret = encoder_process.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                logger.error("Encoder timeout after 300s")
+                encoder_process.kill()
+                return False
 
             if ret != 0:
-                if stderr:
-                    stderr_text = stderr.decode() if isinstance(stderr, bytes) else stderr
-                    logger.error(f"  Encoder stderr: {stderr_text[:500]}")
                 logger.error(f"Encoder failed with return code {ret}")
                 return False
 
@@ -285,7 +286,7 @@ class StitchingPipeline:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,  # Don't capture stdout (prevents buffer fill)
-            stderr=subprocess.PIPE,     # Capture stderr for error reporting
+            stderr=subprocess.DEVNULL,  # Don't capture stderr (prevents deadlock on large outputs)
         )
 
     def _stitch_frame(
