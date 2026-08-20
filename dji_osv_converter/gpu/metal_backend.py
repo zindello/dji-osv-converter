@@ -487,21 +487,189 @@ class MetalBackend(GPUBackend):
         """
         Fisheye undistortion + warping using Metal compute shader.
 
-        This is the critical performance path. Full GPU implementation would
-        use Metal compute pipeline for 20-50× speedup.
+        Replaces OpenCV's 5-7 second undistortion with GPU acceleration.
+        Speedup target: 20-50× (5-7s → 100-300ms).
+        """
+        try:
+            if not self.device or not self.command_queue:
+                logger.error("Metal device not initialized")
+                return None
 
-        For now: fallback to CPU with OpenCV.
+            # Create undistortion lookup maps
+            map_x, map_y = self._create_undistortion_maps(
+                frame.width, frame.height, calibration
+            )
+
+            if map_x is None or map_y is None:
+                logger.debug("Undistortion map creation failed, using CPU fallback")
+                return self._cpu_undistort(frame, calibration)
+
+            # Load shader library
+            shader_lib = self._get_shader_library()
+            if shader_lib is None:
+                logger.debug("Shaders not available, using CPU fallback")
+                return self._cpu_undistort(frame, calibration)
+
+            # Get kernel function
+            kernel_func = shader_lib.newFunctionWithName_("fisheye_undistort")
+            if kernel_func is None:
+                logger.debug("Undistort kernel not found, using CPU fallback")
+                return self._cpu_undistort(frame, calibration)
+
+            # Create compute pipeline
+            pipeline_state = self.device.newComputePipelineStateWithFunction_error_(
+                kernel_func, None
+            )
+            if pipeline_state is None:
+                logger.debug("Pipeline creation failed, using CPU fallback")
+                return self._cpu_undistort(frame, calibration)
+
+            # Execute GPU kernel
+            result = self._dispatch_undistort_kernel(
+                pipeline_state, frame, map_x, map_y
+            )
+
+            if result is not None:
+                return result
+
+            # Fallback to CPU
+            logger.debug("GPU undistort failed, using CPU fallback")
+            return self._cpu_undistort(frame, calibration)
+
+        except Exception as e:
+            logger.error(f"Undistortion failed: {e}")
+            return self._cpu_undistort(frame, calibration)
+
+    def _create_undistortion_maps(
+        self, width: int, height: int, calibration: Dict[str, Any]
+    ) -> tuple:
+        """
+        Create undistortion lookup maps for fisheye correction.
+
+        Returns (map_x, map_y) as numpy arrays for GPU textures.
         """
         try:
             import cv2
 
-            # Get array from GPU frame
-            if hasattr(frame.gpu_handle, "to_numpy"):
-                array = frame.gpu_handle.to_numpy()
-            else:
-                array = frame.gpu_handle
+            # Extract calibration parameters
+            focal_length = calibration.get("focal_length", 1000.0)
+            principal_point = calibration.get("principal_point", width / 2.0)
+            distortion_coeffs = calibration.get("distortion_coeffs", [0.15, 0.05, 0.0, 0.0])
 
-            # CPU-based fisheye undistortion (temporary)
+            K = np.array(
+                [[focal_length, 0, principal_point], [0, focal_length, principal_point], [0, 0, 1]],
+                dtype=np.float32,
+            )
+            D = np.array(distortion_coeffs, dtype=np.float32)
+
+            # Create new camera matrix for undistorted output
+            K_new = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K, D, (width, height), np.eye(3))
+
+            # Create undistortion maps
+            map_x, map_y = cv2.fisheye.initUndistortRectifyMap(
+                K, D, np.eye(3), K_new, (width, height), cv2.CV_32F
+            )
+
+            logger.debug(f"Created undistortion maps: {map_x.shape}, {map_y.shape}")
+            return map_x, map_y
+
+        except Exception as e:
+            logger.error(f"Failed to create undistortion maps: {e}")
+            return None, None
+
+    def _dispatch_undistort_kernel(
+        self, pipeline_state, frame: GPUFrame, map_x: np.ndarray, map_y: np.ndarray
+    ) -> Optional[GPUFrame]:
+        """Execute fisheye undistortion kernel on GPU"""
+        try:
+            from Metal import MTLSize
+
+            # Create command buffer
+            cmd_buffer = self.command_queue.commandBuffer()
+            if cmd_buffer is None:
+                return None
+
+            import time
+
+            start = time.time()
+
+            # Create textures
+            # Input frame texture (RGB24 assumed after color conversion)
+            input_texture = self._create_texture(frame.gpu_handle, frame.width, frame.height, 85)  # RGBA
+
+            # Lookup map textures (single channel float)
+            map_x_f32 = map_x.astype(np.float32)
+            map_y_f32 = map_y.astype(np.float32)
+            map_x_texture = self._create_texture(map_x_f32, frame.width, frame.height, 52)  # R32Float
+            map_y_texture = self._create_texture(map_y_f32, frame.width, frame.height, 52)  # R32Float
+
+            # Output texture
+            output_data = np.zeros((frame.height, frame.width, 4), dtype=np.uint8)
+            output_texture = self._create_texture(output_data, frame.width, frame.height, 85)  # RGBA
+
+            if not (input_texture and map_x_texture and map_y_texture and output_texture):
+                logger.error("Failed to create textures for undistortion")
+                return None
+
+            # Create compute encoder
+            compute_encoder = cmd_buffer.computeCommandEncoder()
+            if compute_encoder is None:
+                return None
+
+            # Set pipeline and bind textures
+            compute_encoder.setComputePipelineState_(pipeline_state)
+            compute_encoder.setTexture_atIndex_(input_texture, 0)
+            compute_encoder.setTexture_atIndex_(map_x_texture, 1)
+            compute_encoder.setTexture_atIndex_(map_y_texture, 2)
+            compute_encoder.setTexture_atIndex_(output_texture, 3)
+
+            # Dispatch kernel
+            threadgroup_width = 16
+            threadgroup_height = 16
+            thread_group_size = MTLSize(width=threadgroup_width, height=threadgroup_height, depth=1)
+
+            grid_width = (frame.width + threadgroup_width - 1) // threadgroup_width
+            grid_height = (frame.height + threadgroup_height - 1) // threadgroup_height
+            grid_size = MTLSize(width=grid_width, height=grid_height, depth=1)
+
+            compute_encoder.dispatchThreadgroups_threadsPerThreadgroup_(grid_size, thread_group_size)
+            compute_encoder.endEncoding()
+
+            # Commit and wait
+            cmd_buffer.commit()
+            cmd_buffer.waitUntilCompleted()
+
+            elapsed = time.time() - start
+            logger.debug(f"GPU undistortion completed in {elapsed*1000:.1f}ms")
+
+            # Read result
+            result_data = self._read_texture(output_texture, frame.width, frame.height)
+            if result_data is None:
+                return None
+
+            return GPUFrame(
+                gpu_handle=result_data,
+                width=frame.width,
+                height=frame.height,
+                color_space=frame.color_space,
+            )
+
+        except Exception as e:
+            logger.error(f"Undistort kernel dispatch failed: {e}")
+            import traceback
+
+            logger.debug(traceback.format_exc())
+            return None
+
+    def _cpu_undistort(self, frame: GPUFrame, calibration: Dict[str, Any]) -> Optional[GPUFrame]:
+        """CPU-based fisheye undistortion fallback"""
+        try:
+            import cv2
+
+            array = frame.gpu_handle
+            if not isinstance(array, np.ndarray):
+                array = np.asarray(array)
+
             focal_length = calibration.get("focal_length", 1000.0)
             principal_point = calibration.get("principal_point", frame.width / 2)
 
@@ -511,10 +679,10 @@ class MetalBackend(GPUBackend):
             )
             D = np.array([0.15, 0.05, 0.0, 0.0], dtype=np.float32)
 
-            # Undistort (CPU - this is the bottleneck we need to GPU-accelerate)
+            # CPU undistortion (this is what we're trying to accelerate)
             undistorted = cv2.fisheye.undistortImage(array, K, D)
 
-            logger.debug(f"Undistorted via CPU (TODO: GPU acceleration)")
+            logger.debug("Undistorted via CPU (GPU acceleration pending)")
 
             return GPUFrame(
                 gpu_handle=undistorted,
@@ -524,7 +692,7 @@ class MetalBackend(GPUBackend):
             )
 
         except Exception as e:
-            logger.error(f"Undistortion failed: {e}")
+            logger.error(f"CPU undistortion failed: {e}")
             return None
 
     def blend_frames(
@@ -533,29 +701,218 @@ class MetalBackend(GPUBackend):
         frame_right: GPUFrame,
         overlap_width: int,
     ) -> Optional[GPUFrame]:
-        """Seam blending using Metal compute shader (CPU fallback for now)"""
+        """
+        Seam blending using Metal compute shader.
+
+        Applies alpha feathering in overlap region for smooth stitching.
+        Speedup target: 20-40× (1-2s → 50-100ms).
+        """
         try:
-            left = frame_left.gpu_handle if isinstance(frame_left.gpu_handle, np.ndarray) else frame_left.gpu_handle.to_numpy()
-            right = frame_right.gpu_handle if isinstance(frame_right.gpu_handle, np.ndarray) else frame_right.gpu_handle.to_numpy()
+            if not self.device or not self.command_queue:
+                logger.error("Metal device not initialized")
+                return None
 
-            # Basic alpha blend
-            output = np.zeros(
-                (frame_left.height, frame_left.width + frame_right.width, 3), dtype=np.uint8
+            # Load shader library
+            shader_lib = self._get_shader_library()
+            if shader_lib is None:
+                logger.debug("Shaders not available, using CPU fallback")
+                return self._cpu_blend(frame_left, frame_right, overlap_width)
+
+            # Get kernel function
+            kernel_func = shader_lib.newFunctionWithName_("seam_blend")
+            if kernel_func is None:
+                logger.debug("Blend kernel not found, using CPU fallback")
+                return self._cpu_blend(frame_left, frame_right, overlap_width)
+
+            # Create compute pipeline
+            pipeline_state = self.device.newComputePipelineStateWithFunction_error_(
+                kernel_func, None
             )
-            output[:, : frame_left.width] = left
-            output[:, frame_left.width :] = right
+            if pipeline_state is None:
+                logger.debug("Pipeline creation failed, using CPU fallback")
+                return self._cpu_blend(frame_left, frame_right, overlap_width)
 
-            # TODO: Metal compute kernel for proper seam blending
+            # Execute GPU kernel
+            result = self._dispatch_blend_kernel(
+                pipeline_state, frame_left, frame_right, overlap_width
+            )
+
+            if result is not None:
+                return result
+
+            # Fallback to CPU
+            logger.debug("GPU blend failed, using CPU fallback")
+            return self._cpu_blend(frame_left, frame_right, overlap_width)
+
+        except Exception as e:
+            logger.error(f"Blending failed: {e}")
+            return self._cpu_blend(frame_left, frame_right, overlap_width)
+
+    def _dispatch_blend_kernel(
+        self,
+        pipeline_state,
+        frame_left: GPUFrame,
+        frame_right: GPUFrame,
+        overlap_width: int,
+    ) -> Optional[GPUFrame]:
+        """Execute seam blending kernel on GPU"""
+        try:
+            from Metal import MTLSize
+
+            if not isinstance(frame_left.gpu_handle, np.ndarray):
+                return None
+            if not isinstance(frame_right.gpu_handle, np.ndarray):
+                return None
+
+            left_data = frame_left.gpu_handle
+            right_data = frame_right.gpu_handle
+
+            height = frame_left.height
+            output_width = frame_left.width + frame_right.width - overlap_width
+
+            # Create blend mask (alpha feathering in overlap region)
+            blend_mask = self._create_blend_mask(height, frame_left.width, frame_right.width, overlap_width)
+
+            # Create command buffer
+            cmd_buffer = self.command_queue.commandBuffer()
+            if cmd_buffer is None:
+                return None
+
+            import time
+
+            start = time.time()
+
+            # Create textures
+            left_texture = self._create_texture(left_data, frame_left.width, height, 85)  # RGBA
+            right_texture = self._create_texture(right_data, frame_right.width, height, 85)  # RGBA
+            blend_mask_texture = self._create_texture(blend_mask, frame_left.width, height, 52)  # R32Float
+
+            # Output texture (combined width)
+            output_data = np.zeros((height, output_width, 4), dtype=np.uint8)
+            output_texture = self._create_texture(output_data, output_width, height, 85)  # RGBA
+
+            if not (left_texture and right_texture and blend_mask_texture and output_texture):
+                logger.error("Failed to create textures for blending")
+                return None
+
+            # Create compute encoder
+            compute_encoder = cmd_buffer.computeCommandEncoder()
+            if compute_encoder is None:
+                return None
+
+            # Set pipeline and bind textures
+            compute_encoder.setComputePipelineState_(pipeline_state)
+            compute_encoder.setTexture_atIndex_(left_texture, 0)
+            compute_encoder.setTexture_atIndex_(right_texture, 1)
+            compute_encoder.setTexture_atIndex_(blend_mask_texture, 2)
+            compute_encoder.setTexture_atIndex_(output_texture, 3)
+
+            # Dispatch kernel over output dimensions
+            threadgroup_width = 16
+            threadgroup_height = 16
+            thread_group_size = MTLSize(width=threadgroup_width, height=threadgroup_height, depth=1)
+
+            grid_width = (output_width + threadgroup_width - 1) // threadgroup_width
+            grid_height = (height + threadgroup_height - 1) // threadgroup_height
+            grid_size = MTLSize(width=grid_width, height=grid_height, depth=1)
+
+            compute_encoder.dispatchThreadgroups_threadsPerThreadgroup_(grid_size, thread_group_size)
+            compute_encoder.endEncoding()
+
+            # Commit and wait
+            cmd_buffer.commit()
+            cmd_buffer.waitUntilCompleted()
+
+            elapsed = time.time() - start
+            logger.debug(f"GPU blend completed in {elapsed*1000:.1f}ms")
+
+            # Read result
+            result_data = self._read_texture(output_texture, output_width, height)
+            if result_data is None:
+                return None
 
             return GPUFrame(
-                gpu_handle=output,
-                width=output.shape[1],
-                height=output.shape[0],
+                gpu_handle=result_data,
+                width=output_width,
+                height=height,
                 color_space=frame_left.color_space,
             )
 
         except Exception as e:
-            logger.error(f"Blending failed: {e}")
+            logger.error(f"Blend kernel dispatch failed: {e}")
+            import traceback
+
+            logger.debug(traceback.format_exc())
+            return None
+
+    def _create_blend_mask(
+        self, height: int, left_width: int, right_width: int, overlap_width: int
+    ) -> np.ndarray:
+        """
+        Create blend mask for seam blending.
+
+        Alpha mask: 0.0 (left dominant) → 1.0 (right dominant) in overlap region.
+        """
+        try:
+            mask = np.zeros((height, left_width), dtype=np.float32)
+
+            # Overlap region starts at (left_width - overlap_width)
+            overlap_start = left_width - overlap_width
+
+            for x in range(overlap_start, left_width):
+                # Linear alpha from 0 to 1 across overlap
+                alpha = (x - overlap_start) / max(overlap_width, 1)
+                mask[:, x] = alpha
+
+            logger.debug(f"Created blend mask: overlap={overlap_width}px starting at x={overlap_start}")
+            return mask
+
+        except Exception as e:
+            logger.error(f"Failed to create blend mask: {e}")
+            return np.zeros((height, left_width), dtype=np.float32)
+
+    def _cpu_blend(
+        self, frame_left: GPUFrame, frame_right: GPUFrame, overlap_width: int
+    ) -> Optional[GPUFrame]:
+        """CPU-based frame blending fallback"""
+        try:
+            left = frame_left.gpu_handle if isinstance(frame_left.gpu_handle, np.ndarray) else frame_left.gpu_handle.to_numpy()
+            right = frame_right.gpu_handle if isinstance(frame_right.gpu_handle, np.ndarray) else frame_right.gpu_handle.to_numpy()
+
+            height = frame_left.height
+            left_width = frame_left.width
+            right_width = frame_right.width
+            output_width = left_width + right_width - overlap_width
+
+            # Create output image
+            output = np.zeros((height, output_width, left.shape[2]), dtype=left.dtype)
+
+            # Copy left part
+            output[:, :left_width] = left
+
+            # Blend overlap region
+            if overlap_width > 0:
+                overlap_start = left_width - overlap_width
+                for x in range(overlap_width):
+                    alpha = x / max(overlap_width, 1)
+                    left_x = overlap_start + x
+                    right_x = x
+                    output[:, left_x] = (1 - alpha) * left[:, left_x] + alpha * right[:, right_x]
+
+            # Copy right part
+            output[:, left_width:] = right[:, overlap_width:]
+
+            logger.debug("Blended via CPU (GPU acceleration pending)")
+
+            return GPUFrame(
+                gpu_handle=output,
+                width=output_width,
+                height=height,
+                color_space=frame_left.color_space,
+            )
+
+        except Exception as e:
+            logger.error(f"CPU blend failed: {e}")
             return None
 
     def encode_hevc(
