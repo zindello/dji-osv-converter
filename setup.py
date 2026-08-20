@@ -33,6 +33,7 @@ setup(
         "pyobjc-framework-Metal>=12.0",
         "protobuf>=3.20.0",
         "PyAV>=10.0.0",
+        "numpy>=1.24.0",
     ],
     extras_require={
         "dev": [
