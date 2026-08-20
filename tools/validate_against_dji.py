@@ -172,7 +172,11 @@ def main() -> int:
     st = Stitcher360.from_file(args.osv, width=W, height=H,
                                max_frames=max(args.frames) + 30)
     if args.lens:
-        if args.lens in ("equidistant", "file"):
+        if args.lens == "lut":
+            import json as _json
+            d = _json.load(open("/tmp/lut.json"))
+            st.lens_model = {int(k): ("lut", v[0], v[1]) for k, v in d.items()}
+        elif args.lens in ("equidistant", "file"):
             st.lens_model = args.lens
         else:
             st.lens_model = tuple(float(x) for x in args.lens.split(","))

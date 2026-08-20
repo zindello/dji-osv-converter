@@ -84,6 +84,12 @@ def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "equidistant",
     'poly_norm' applies the same series to theta/theta_max, which keeps the
     correction small and monotonic over the real range.
     """
+    if isinstance(model, (tuple, list)) and len(model) == 3 and model[0] == "lut":
+        # Non-parametric radial curve: theta -> radius, interpolated. Used to
+        # test whether the 4-coefficient form is the accuracy limit.
+        _, tb, rb = model
+        return np.interp(theta, np.asarray(tb), np.asarray(rb),
+                         left=float(rb[0]), right=float(rb[-1])) / max(cal.fx, 1e-9)
     if model == "file":
         # The k1..k4 stored in the OSV ARE the radial polynomial - but in theta
         # normalised by pi/2, not raw theta. Applied to raw theta the curve is
