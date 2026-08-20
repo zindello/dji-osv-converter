@@ -15,10 +15,12 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import json
+import numpy as np
 
 from .frame_decoder import FrameExtractor
 from .protobuf_schema import FrameMetadataParser
 from .stitch_dualstitcher import DualStitcher, StitcherConfig, DualStitcherError
+from .stitch_opencv import create_stitcher
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ class StitchingPipeline:
     OUTPUT_WIDTH = 7680
     OUTPUT_HEIGHT = 3840
     OUTPUT_FPS = 29.97
-    OUTPUT_CODEC = "hevc"
+    OUTPUT_CODEC = "libx264"  # h.264 for now; HEVC has muxing issues on Apple Silicon
     OUTPUT_BITRATE = "40M"
 
     def __init__(self, input_path: Path, output_path: Path):
@@ -46,6 +48,7 @@ class StitchingPipeline:
         self.frame_extractor: Optional[FrameExtractor] = None
         self.metadata_parser = FrameMetadataParser()
         self.stitcher: Optional[DualStitcher] = None
+        self.opencv_stitcher = None
 
     def run(
         self,
@@ -101,10 +104,19 @@ class StitchingPipeline:
             try:
                 config = StitcherConfig()
                 self.stitcher = DualStitcher(config)
-                logger.info(f"  Stitcher available: {self.stitcher.is_available()}")
+                logger.info(f"  DualStitcher available: {self.stitcher.is_available()}")
             except DualStitcherError as e:
-                logger.warning(f"  Stitcher not available: {e}")
-                logger.info("  Will use stub stitcher for testing")
+                logger.warning(f"  DualStitcher not available: {e}")
+
+            # Try OpenCV stitcher as fallback
+            if not (self.stitcher and self.stitcher.is_available()):
+                logger.info("  Trying OpenCV GPU stitcher...")
+                self.opencv_stitcher = create_stitcher()
+                if self.opencv_stitcher:
+                    logger.info(f"  OpenCV stitcher ready (backend: {self.opencv_stitcher.gpu.backend_name})")
+                else:
+                    logger.warning("  OpenCV stitcher not available")
+                    logger.info("  Will use stub stitcher for testing")
 
             # Step 4: Initialize encoder
             logger.info("Step 4: Initializing FFmpeg encoder...")
@@ -143,14 +155,12 @@ class StitchingPipeline:
 
             # Step 6: Finalize encoding
             logger.info("Step 6: Finalizing encoding...")
-            encoder_process.stdin.close()
 
-            # Read remaining output and wait for process to finish
+            # Signal EOF to FFmpeg and wait for completion
             try:
                 stdout, stderr = encoder_process.communicate(timeout=300)
-            except ValueError:
-                # stdin already closed, just wait
-                stdout, stderr = None, None
+            except Exception as e:
+                logger.debug(f"Communicate error (expected if stdin closed): {e}")
                 encoder_process.wait(timeout=300)
 
             ret = encoder_process.returncode
@@ -215,7 +225,6 @@ class StitchingPipeline:
             "-c:v", self.OUTPUT_CODEC,
             "-preset", "medium",
             "-b:v", self.OUTPUT_BITRATE,
-            "-tag:v", "hvc1",  # H.265 tag for compatibility
             "-pix_fmt", "yuv420p",
             "-y",  # Overwrite output
             str(self.output_path),
@@ -242,15 +251,10 @@ class StitchingPipeline:
         Returns:
             Stitched equirectangular frame in RGB24 format, or None on failure
         """
-        # For now, use a simple stub that averages the two input frames
-        # In production, this would call DualStitcher.FlowStitchWarpFusion()
-
         if not frame_data or 0 not in frame_data or 1 not in frame_data:
             return None
 
         try:
-            import numpy as np
-
             # Get input frames as arrays
             frame0 = np.frombuffer(frame_data[0], dtype=np.uint8)
             frame1 = np.frombuffer(frame_data[1], dtype=np.uint8)
@@ -258,15 +262,19 @@ class StitchingPipeline:
             frame0 = frame0.reshape((3840, 3840, 3))
             frame1 = frame1.reshape((3840, 3840, 3))
 
-            # Stub: Simple average stitching
-            # In production: Call DualStitcher.FlowStitchWarpFusion() here
-            combined = np.average([frame0, frame1], axis=0).astype(np.uint8)
+            # Try OpenCV stitcher first
+            if self.opencv_stitcher:
+                output = self.opencv_stitcher.stitch_frame(frame0, frame1, calibration)
+                if output is not None:
+                    return output.tobytes()
+                else:
+                    logger.warning("OpenCV stitcher returned None, using fallback")
 
-            # Resize to output dimensions (7680×3840)
-            # Simple approach: tile horizontally
+            # Fallback: Simple average stitching for testing
+            combined = np.average([frame0, frame1], axis=0).astype(np.uint8)
             output = np.zeros((self.OUTPUT_HEIGHT, self.OUTPUT_WIDTH, 3), dtype=np.uint8)
-            output[:, :3840] = combined[:, :3840]  # Left half
-            output[:, 3840:7680] = combined[:, :3840]  # Right half (duplicate)
+            output[:, :3840] = combined[:, :3840]
+            output[:, 3840:7680] = combined[:, :3840]
 
             return output.tobytes()
 

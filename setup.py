@@ -34,6 +34,7 @@ setup(
         "protobuf>=3.20.0",
         "PyAV>=10.0.0",
         "numpy>=1.24.0",
+        "opencv-contrib-python>=4.5.0",
     ],
     extras_require={
         "dev": [
@@ -42,11 +43,6 @@ setup(
             "black>=21.0",
             "flake8>=3.9",
             "mypy>=0.9",
-        ],
-        "gpu": [
-            # GPU acceleration packages (optional, for Phase 2)
-            "opencv-python>=4.5.0",
-            "numpy>=1.20.0",
         ],
     },
     entry_points={
