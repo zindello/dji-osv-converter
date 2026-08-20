@@ -21,6 +21,7 @@ class MetalBackend(GPUBackend):
         self.device = None
         self.command_queue = None
         self.decompress_session = None
+        self.shader_library = None
 
     def initialize(self) -> bool:
         """Initialize Metal device and VideoToolbox decoder"""
@@ -146,9 +147,15 @@ class MetalBackend(GPUBackend):
                 logger.error(f"Failed to create pipeline for {kernel_name}")
                 return self._cpu_convert_color_space(frame, target_space)
 
-            # TODO: Implement full GPU texture creation and kernel dispatch
-            # For now, use CPU fallback while completing GPU pipeline
-            logger.debug(f"Metal kernel {kernel_name} ready, using CPU fallback (TODO: GPU dispatch)")
+            # Execute GPU kernel
+            result = self._dispatch_color_kernel(
+                kernel_name, pipeline_state, frame, target_space
+            )
+            if result is not None:
+                return result
+
+            # Fallback to CPU if GPU dispatch failed
+            logger.debug("GPU dispatch failed, using CPU fallback")
             return self._cpu_convert_color_space(frame, target_space)
 
         except Exception as e:
@@ -177,6 +184,232 @@ class MetalBackend(GPUBackend):
 
         except Exception as e:
             logger.error(f"Failed to load shader library: {e}")
+            return None
+
+    def _dispatch_color_kernel(
+        self,
+        kernel_name: str,
+        pipeline_state,
+        frame: GPUFrame,
+        target_space: GPUColorSpace,
+    ) -> Optional[GPUFrame]:
+        """
+        Execute Metal compute kernel for color conversion.
+
+        Handles texture creation, kernel dispatch, and result readback.
+        """
+        import time
+
+        try:
+            from Metal import MTLPixelFormat, MTLSize
+
+            if not isinstance(frame.gpu_handle, np.ndarray):
+                logger.error("GPU frame data must be numpy array")
+                return None
+
+            input_data = frame.gpu_handle
+            width = frame.width
+            height = frame.height
+
+            # Create command buffer
+            cmd_buffer = self.command_queue.commandBuffer()
+            if cmd_buffer is None:
+                logger.error("Failed to create command buffer")
+                return None
+
+            kernel_start = time.time()
+
+            # Create textures for input
+            if frame.color_space == GPUColorSpace.YUV420P:
+                y_data, uv_data = self._split_yuv420p(input_data, width, height)
+
+                # Use pixel format codes directly (PyObjC style)
+                # 70 = R8Unorm, 71 = RG8Unorm, 85 = RGBA8Unorm
+                y_texture = self._create_texture(y_data, width, height, 70)  # R8Unorm
+                uv_texture = self._create_texture(uv_data, width // 2, height // 2, 71)  # RG8Unorm
+
+                if not (y_texture and uv_texture):
+                    logger.error("Failed to create input textures")
+                    return None
+
+            else:
+                logger.error(f"Unsupported input format for kernel: {frame.color_space}")
+                return None
+
+            # Create output texture (RGBA8Unorm = 85)
+            if target_space == GPUColorSpace.RGB24:
+                output_data = np.zeros((height, width, 4), dtype=np.uint8)
+                output_texture = self._create_texture(output_data, width, height, 85)  # RGBA8Unorm
+            else:
+                logger.error(f"Unsupported output format for kernel: {target_space}")
+                return None
+
+            if output_texture is None:
+                logger.error("Failed to create output texture")
+                return None
+
+            # Create compute encoder
+            compute_encoder = cmd_buffer.computeCommandEncoder()
+            if compute_encoder is None:
+                logger.error("Failed to create compute encoder")
+                return None
+
+            # Set pipeline and bind textures
+            compute_encoder.setComputePipelineState_(pipeline_state)
+            compute_encoder.setTexture_atIndex_(y_texture, 0)
+            compute_encoder.setTexture_atIndex_(uv_texture, 1)
+            compute_encoder.setTexture_atIndex_(output_texture, 2)
+
+            # Dispatch kernel with thread groups
+            # Each thread handles one output pixel
+            threadgroup_width = 16
+            threadgroup_height = 16
+
+            thread_group_size = MTLSize(width=threadgroup_width, height=threadgroup_height, depth=1)
+
+            # Calculate grid size in threadgroups
+            grid_width = (width + threadgroup_width - 1) // threadgroup_width
+            grid_height = (height + threadgroup_height - 1) // threadgroup_height
+
+            grid_size = MTLSize(width=grid_width, height=grid_height, depth=1)
+
+            logger.debug(f"Dispatching {kernel_name}: grid={grid_width}×{grid_height}, threads={threadgroup_width}×{threadgroup_height}")
+
+            compute_encoder.dispatchThreadgroups_threadsPerThreadgroup_(grid_size, thread_group_size)
+            compute_encoder.endEncoding()
+
+            # Commit and wait for completion
+            cmd_buffer.commit()
+            cmd_buffer.waitUntilCompleted()
+
+            kernel_time = time.time() - kernel_start
+
+            # Read result back to CPU
+            result_data = self._read_texture(output_texture, width, height)
+            if result_data is None:
+                logger.error("Failed to read texture result")
+                return None
+
+            logger.debug(f"GPU {kernel_name} completed in {kernel_time*1000:.1f}ms")
+
+            return GPUFrame(
+                gpu_handle=result_data,
+                width=width,
+                height=height,
+                color_space=target_space,
+            )
+
+        except Exception as e:
+            logger.error(f"Kernel dispatch failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None
+
+    def _split_yuv420p(
+        self, data: np.ndarray, width: int, height: int
+    ) -> tuple:
+        """Split YUV420p data into Y and UV planes"""
+        try:
+            # YUV420p layout: Y plane (width×height), then UV planes (width/2×height/2)
+            y_size = width * height
+            y_plane = data[:y_size].reshape((height, width))
+
+            uv_size = (width * height) // 2
+            uv_plane = data[y_size : y_size + uv_size].reshape((height // 2, width))
+
+            return y_plane, uv_plane
+        except Exception as e:
+            logger.error(f"Failed to split YUV420p: {e}")
+            return None, None
+
+    def _create_texture(self, data: np.ndarray, width: int, height: int, pixel_format):
+        """Create Metal texture from numpy array"""
+        try:
+            from Metal import MTLTextureDescriptor, MTLResourceStorageModeShared
+            from objc import objc_object
+            from CoreFoundation import CGSize, CGPoint
+
+            desc = MTLTextureDescriptor.texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+                pixel_format, width, height, False
+            )
+
+            if desc is None:
+                logger.error(f"Failed to create texture descriptor ({width}×{height})")
+                return None
+
+            texture = self.device.newTextureWithDescriptor_(desc)
+            if texture is None:
+                logger.error("Failed to allocate texture")
+                return None
+
+            # Calculate bytes per row based on pixel format
+            if pixel_format == 80:  # MTLPixelFormatR8Unorm
+                bytes_per_pixel = 1
+            elif pixel_format == 81:  # MTLPixelFormatRG8Unorm
+                bytes_per_pixel = 2
+            else:  # RGBA8Unorm and others
+                bytes_per_pixel = 4
+
+            bytes_per_row = width * bytes_per_pixel
+            data_bytes = data.tobytes()
+
+            # Use objc to create the region tuple
+            # MTLRegion is {origin: {x, y, z}, size: {width, height, depth}}
+            try:
+                # Try direct method
+                from Metal import MTLRegionMake2D
+
+                region = MTLRegionMake2D(0, 0, width, height)
+            except (ImportError, AttributeError):
+                # Fallback: create region manually via objc
+                # This is a tuple of tuples: ((x, y, z), (width, height, depth))
+                logger.debug("Using manual region construction")
+                region = ((0, 0, 0), (width, height, 1))
+
+            texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow_(region, 0, data_bytes, bytes_per_row)
+
+            return texture
+
+        except Exception as e:
+            logger.error(f"Failed to create texture: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return None
+
+    def _read_texture(self, texture, width: int, height: int) -> Optional[np.ndarray]:
+        """Read Metal texture back to CPU as numpy array"""
+        try:
+            bytes_per_pixel = 4  # RGBA8Unorm
+            bytes_per_row = width * bytes_per_pixel
+            total_bytes = height * bytes_per_row
+
+            # Allocate buffer for texture data
+            data = bytearray(total_bytes)
+
+            try:
+                from Metal import MTLRegionMake2D
+
+                region = MTLRegionMake2D(0, 0, width, height)
+            except (ImportError, AttributeError):
+                # Fallback to manual region
+                region = ((0, 0, 0), (width, height, 1))
+
+            # Read texture data
+            texture.getBytes_bytesPerRow_fromRegion_mipmapLevel_(data, bytes_per_row, region, 0)
+
+            # Convert to numpy RGB24 (drop alpha channel from RGBA)
+            rgba = np.frombuffer(data, dtype=np.uint8).reshape((height, width, 4))
+            rgb = rgba[:, :, :3]  # Drop alpha channel
+
+            return rgb
+
+        except Exception as e:
+            logger.error(f"Failed to read texture: {e}")
+            import traceback
+
+            traceback.print_exc()
             return None
 
     def _cpu_convert_color_space(
