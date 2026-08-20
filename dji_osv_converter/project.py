@@ -25,6 +25,23 @@ from .orientation import directions, rot_matrix
 
 logger = logging.getLogger(__name__)
 
+# The OSV's own k1..k4 ARE the radial polynomial, but expressed in theta
+# normalised by THETA_NORM rather than in raw radians. Applied to raw theta the
+# curve is non-monotonic and lands the image rim ~770 px short.
+#
+# THETA_NORM was solved for against the curve recovered from DJI ground truth:
+# 1.2427 rad fits best (1.9 px RMS across both cameras). Note sqrt(pi/2) =
+# 1.2533 rad fits within measurement noise (1.97 px) and is the value you would
+# get if the encoder writes `t2 = theta*theta/(M_PI/2)`, so the exact intended
+# constant is probably that. We keep the measured value.
+#
+# FILE_GAIN converts fx to the polynomial's leading coefficient. Fitted
+# independently per camera it came out 1.01043 and 1.01055 - agreeing to four
+# decimals, which is why it is treated as one pipeline constant rather than a
+# per-lens correction.
+THETA_NORM = 1.2427
+FILE_GAIN = 1.0105
+
 
 def quat_matrix(q, order: str = "xyzw") -> np.ndarray:
     q = np.asarray(q, dtype=np.float64)
@@ -67,6 +84,19 @@ def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "equidistant",
     'poly_norm' applies the same series to theta/theta_max, which keeps the
     correction small and monotonic over the real range.
     """
+    if model == "file":
+        # The k1..k4 stored in the OSV ARE the radial polynomial - but in theta
+        # normalised by pi/2, not raw theta. Applied to raw theta the curve is
+        # non-monotonic and puts the image rim ~770 px short; normalised, it
+        # reproduces the curve recovered from DJI ground truth to 0.24 deg
+        # (cam0) and 0.41 deg (cam1) RMS.
+        #
+        # FILE_GAIN is a constant factor found identically for both cameras
+        # (1.0257 / 1.0259), so it is a property of DJI's pipeline rather than
+        # of either lens.
+        k1, k2, k3, k4 = cal.k
+        t2 = (theta / THETA_NORM) ** 2
+        return FILE_GAIN * theta * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
     if model == "equidistant":
         return theta
     if isinstance(model, (tuple, list)) and len(model) == 2 and model[0] == "odd":
@@ -156,4 +186,4 @@ def build_maps(cals: list[CameraCalib], out_w: int, out_h: int, **kw) -> list[Ca
 
 
 __all__ = ["build_map", "build_maps", "extrinsic_matrix", "quat_matrix",
-           "project_directions", "radial_map"]
+           "project_directions", "radial_map", "FILE_GAIN", "THETA_NORM"]

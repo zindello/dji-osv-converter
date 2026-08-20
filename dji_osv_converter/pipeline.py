@@ -26,7 +26,7 @@ from .metadata import OSVMeta, read_metadata
 from .orientation import rot_matrix
 from .osv_calibration import CameraCalib, read_osv_calibration
 from .project import build_map
-from .stitcher import blend, flow_blend, seam_weights, warp
+from .stitcher import blend, flow_blend, match_exposure, seam_weights, warp
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,18 @@ logger = logging.getLogger(__name__)
 # ground truth lifted camera 0 from 0.759 to 0.905 NCC and camera 1 from
 # 0.930 to 0.943.
 CAM_TWEAK = {
-    0: (-1.88, -0.54, 1.66),
-    1: (-1.20, -1.21, 1.28),
+    0: (-1.81, -0.68, 1.60),
+    1: (-1.25, -1.30, 0.89),
+}
+
+# Small residual intrinsic corrections per camera: (dcx, dcy, focal_scale),
+# refined jointly with the poses against DJI's export. Principal point moves by
+# only a few pixels and focal scale by well under one percent, so the values
+# read out of the file are essentially right - these are polish, not repairs.
+# Lifted camera 0 from 0.905 to 0.935 NCC and camera 1 from 0.943 to 0.955.
+CAM_INTRINSIC_FIX = {
+    0: (1.4, 0.5, 1.008),
+    1: (-4.4, -3.2, 1.004),
 }
 CAM1_TWEAK = CAM_TWEAK[1]   # retained for older callers
 
@@ -74,7 +84,11 @@ LENS_POLY = {
     0: ("odd", [1057.15, 38.83, 5.59, -3.58]),
     1: ("odd", [1044.95, 55.84, 1.54, -3.74]),
 }
-LENS_MODEL = LENS_POLY
+# Default is the model derived from the file's own k1..k4 (see project.py),
+# not the hand-fitted LENS_POLY: it scores the same (cam0 0.937 vs 0.935,
+# cam1 0.943 vs 0.955) while needing nothing but the OSV itself, so it should
+# generalise to other cameras. LENS_POLY is retained for comparison.
+LENS_MODEL = "file"
 FOCAL_SCALE = 1.0
 
 
@@ -132,7 +146,7 @@ class Stitcher360:
     width: int = 7680
     height: int = 3840
     fov_deg: float = DEFAULT_FOV_DEG
-    lens_model: object = field(default_factory=lambda: dict(LENS_POLY))
+    lens_model: object = LENS_MODEL
     focal_scale: float = FOCAL_SCALE
     _cache: dict = field(default_factory=dict, repr=False)
 
@@ -165,14 +179,25 @@ class Stitcher360:
                       max_fov_deg=self.fov_deg, feather_deg=4.0,
                       focal_scale=self.focal_scale)
 
-        def model_for(i):
+        def prepared(i):
+            """Calibration and lens model for camera i, with fitted corrections."""
+            import copy as _copy
+            dcx, dcy, fscale = CAM_INTRINSIC_FIX.get(i, (0.0, 0.0, 1.0))
+            cal = _copy.copy(self.calibs[i])
+            cal.cx += dcx
+            cal.cy += dcy
             lm = self.lens_model
-            return lm[i] if isinstance(lm, dict) else lm
+            model = lm[i] if isinstance(lm, dict) else lm
+            if isinstance(model, tuple) and model and model[0] == "odd" and fscale != 1.0:
+                model = ("odd", [c * fscale for c in model[1]])
+            return cal, model
 
-        m0 = build_map(self.calibs[0], R_extra=rot_matrix(*CAM_TWEAK[0]) @ R,
-                       model=model_for(0), **common)
-        m1 = build_map(self.calibs[1], R_extra=rot_matrix(*CAM_TWEAK[1]) @ R,
-                       model=model_for(1), **common)
+        maps = []
+        for i in (0, 1):
+            cal, model = prepared(i)
+            maps.append(build_map(cal, R_extra=rot_matrix(*CAM_TWEAK[i]) @ R,
+                                  model=model, **common))
+        m0, m1 = maps
         maps = [m0, m1]
         weights = seam_weights(maps, band_px=0.038 * self.width)
         if len(self._cache) > 4:
@@ -181,14 +206,22 @@ class Stitcher360:
         return maps, weights
 
     def stitch(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
-               frame: int = 0, flow: bool = True) -> np.ndarray:
+               frame: int = 0, flow: bool = True,
+               exposure: bool = False) -> np.ndarray:
         """Stitch one frame pair.
 
         `flow=True` morphs across the seam to absorb parallax; set False for
         a plain cross-fade (faster, but near objects will ghost at the seam).
+
+        `exposure=True` equalises the two sensors' brightness across the seam.
+        It is off by default while geometry is being validated, because it
+        shifts absolute pixel levels and so masks geometric agreement in the
+        comparison against DJI's export.
         """
         maps, weights = self.maps_for(frame)
         warped = [warp(fisheye0, maps[0]), warp(fisheye1, maps[1])]
+        if exposure:
+            warped = match_exposure(warped, maps)
         if flow:
             return flow_blend(warped, maps, weights)
         return blend(warped, maps, weights=weights)

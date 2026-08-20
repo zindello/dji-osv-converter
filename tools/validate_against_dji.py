@@ -172,8 +172,10 @@ def main() -> int:
     st = Stitcher360.from_file(args.osv, width=W, height=H,
                                max_frames=max(args.frames) + 30)
     if args.lens:
-        st.lens_model = ("equidistant" if args.lens == "equidistant"
-                         else tuple(float(x) for x in args.lens.split(",")))
+        if args.lens in ("equidistant", "file"):
+            st.lens_model = args.lens
+        else:
+            st.lens_model = tuple(float(x) for x in args.lens.split(","))
         st._cache.clear()
     print(f"lens model: {st.lens_model}")
 

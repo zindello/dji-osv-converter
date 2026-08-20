@@ -70,6 +70,53 @@ def seam_weights(cams: list[CameraMap], band_px: float = 292.0) -> np.ndarray:
     return w
 
 
+def match_exposure(warped: list[np.ndarray], cams: list[CameraMap],
+                   max_gain: float = 1.6) -> list[np.ndarray]:
+    """Equalise the two cameras' exposure and colour using their overlap.
+
+    The two sensors meter independently, so one hemisphere is usually a little
+    brighter or cooler than the other and the difference shows as a visible
+    step along the seam. In the overlap both cameras image the same scene, so
+    any difference there is the sensors disagreeing, not the world changing.
+
+    Gains are applied symmetrically - each camera moves half way to the shared
+    mean - so the panorama's overall brightness is preserved rather than being
+    dragged towards whichever camera happens to be camera 0.
+    """
+    ov = cams[0].valid & cams[1].valid
+    if ov.sum() < 5000:
+        return warped
+
+    a = warped[0].astype(np.float32)
+    b = warped[1].astype(np.float32)
+    # Ignore near-black pixels: their ratios are dominated by noise.
+    lit = ov & (a.mean(axis=2) > 6) & (b.mean(axis=2) > 6)
+    if lit.sum() < 5000:
+        return warped
+
+    out = []
+    gains = []
+    for ch in range(3):
+        ma = float(a[..., ch][lit].mean())
+        mb = float(b[..., ch][lit].mean())
+        if ma < 1e-3 or mb < 1e-3:
+            gains.append((1.0, 1.0))
+            continue
+        ratio = mb / ma
+        g0 = float(np.clip(np.sqrt(ratio), 1.0 / max_gain, max_gain))
+        g1 = float(np.clip(1.0 / np.sqrt(ratio), 1.0 / max_gain, max_gain))
+        gains.append((g0, g1))
+
+    logger.debug("exposure gains cam0=%s cam1=%s",
+                 [round(g[0], 3) for g in gains], [round(g[1], 3) for g in gains])
+    for idx, img in enumerate((a, b)):
+        adj = img.copy()
+        for ch in range(3):
+            adj[..., ch] *= gains[ch][idx]
+        out.append(np.clip(adj, 0, 255).astype(np.uint8))
+    return out
+
+
 def blend(warped: list[np.ndarray], cams: list[CameraMap],
           band_px: float = 292.0, weights: np.ndarray | None = None) -> np.ndarray:
     """Cross-fade two projected frames across a narrow seam band."""
@@ -176,4 +223,5 @@ def coverage_report(cams: list[CameraMap]) -> dict:
     }
 
 
-__all__ = ["warp", "blend", "flow_blend", "seam_weights", "stitch", "coverage_report"]
+__all__ = ["warp", "blend", "flow_blend", "seam_weights", "stitch",
+           "match_exposure", "coverage_report"]
