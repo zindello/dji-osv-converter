@@ -23,6 +23,7 @@ from .protobuf_schema import FrameMetadataParser
 from .stitch_dualstitcher import DualStitcher, StitcherConfig, DualStitcherError
 from .stitch_opencv import create_stitcher
 from .stitch_gpu import GPUStitcher
+from .encoder_opencv import OpenCVEncoder
 from .gpu import factory as gpu_factory
 
 logger = logging.getLogger(__name__)
@@ -129,9 +130,17 @@ class StitchingPipeline:
                     logger.warning("  OpenCV stitcher not available")
                     logger.info("  Will use stub stitcher for testing")
 
-            # Step 4: Initialize encoder
-            logger.info("Step 4: Initializing FFmpeg encoder...")
-            encoder_process = self._start_encoder()
+            # Step 4: Initialize encoder (OpenCV VideoWriter - no FFmpeg)
+            logger.info("Step 4: Initializing encoder...")
+            encoder = OpenCVEncoder(
+                str(self.output_path),
+                width=self.OUTPUT_WIDTH,
+                height=self.OUTPUT_HEIGHT,
+                fps=self.OUTPUT_FPS,
+            )
+            if not encoder.open():
+                logger.error("Failed to open encoder")
+                return False
 
             # Step 5: Main processing loop
             logger.info("Step 5: Processing frames...")
@@ -163,8 +172,15 @@ class StitchingPipeline:
                     logger.warning(f"  Failed to stitch frame {frame_num}")
                     continue
 
-                # Write to encoder
-                encoder_process.stdin.write(stitched)
+                # Convert bytes to numpy array for encoder
+                frame_array = np.frombuffer(stitched, dtype=np.uint8).reshape(
+                    (self.OUTPUT_HEIGHT, self.OUTPUT_WIDTH, 3)
+                )
+
+                # Write frame to encoder
+                if not encoder.write_frame(frame_array):
+                    logger.error(f"Failed to write frame {frame_num}")
+                    break
 
                 frames_processed += 1
                 total_frame_time = time.time() - frame_start
@@ -178,21 +194,9 @@ class StitchingPipeline:
             # Step 6: Finalize encoding
             logger.info("Step 6: Finalizing encoding...")
 
-            # Close stdin and wait for FFmpeg to finish (no communicate to avoid deadlock)
-            try:
-                encoder_process.stdin.close()
-            except:
-                pass
-
-            try:
-                ret = encoder_process.wait(timeout=300)
-            except subprocess.TimeoutExpired:
-                logger.error("Encoder timeout after 300s")
-                encoder_process.kill()
-                return False
-
-            if ret != 0:
-                logger.error(f"Encoder failed with return code {ret}")
+            # Close encoder (flushes remaining frames and finalizes output)
+            if not encoder.close():
+                logger.error("Encoder finalization failed")
                 return False
 
             logger.info(f"  Encoded {frames_processed} frames")
@@ -264,30 +268,6 @@ class StitchingPipeline:
             # Create empty metadata file if extraction fails
             output_path.touch()
 
-    def _start_encoder(self) -> subprocess.Popen:
-        """Start FFmpeg encoder subprocess"""
-        cmd = [
-            "ffmpeg",
-            "-f", "rawvideo",
-            "-video_size", f"{self.OUTPUT_WIDTH}x{self.OUTPUT_HEIGHT}",
-            "-pixel_format", "rgb24",
-            "-framerate", str(self.OUTPUT_FPS),
-            "-i", "-",  # stdin
-            "-c:v", self.OUTPUT_CODEC,
-            "-preset", "ultrafast",  # Fast encoding, prevents buffer deadlock
-            "-b:v", self.OUTPUT_BITRATE,
-            "-pix_fmt", "yuv420p",
-            "-y",  # Overwrite output
-            str(self.output_path),
-        ]
-
-        logger.debug(f"Starting encoder: {' '.join(cmd[:8])}... (output: {self.output_path})")
-        return subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,  # Don't capture stdout (prevents buffer fill)
-            stderr=subprocess.DEVNULL,  # Don't capture stderr (prevents deadlock on large outputs)
-        )
 
     def _stitch_frame(
         self, frame_data: Dict[int, bytes], calibration: Optional[Dict]
