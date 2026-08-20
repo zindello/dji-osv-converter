@@ -273,19 +273,19 @@ class StitchingPipeline:
             "-framerate", str(self.OUTPUT_FPS),
             "-i", "-",  # stdin
             "-c:v", self.OUTPUT_CODEC,
-            "-preset", "medium",
+            "-preset", "ultrafast",  # Fast encoding, prevents buffer deadlock
             "-b:v", self.OUTPUT_BITRATE,
             "-pix_fmt", "yuv420p",
             "-y",  # Overwrite output
             str(self.output_path),
         ]
 
-        logger.debug(f"Starting encoder: {' '.join(cmd)}")
+        logger.debug(f"Starting encoder: {' '.join(cmd[:8])}... (output: {self.output_path})")
         return subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,  # Don't capture stdout (prevents buffer fill)
+            stderr=subprocess.PIPE,     # Capture stderr for error reporting
         )
 
     def _stitch_frame(
