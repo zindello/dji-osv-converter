@@ -26,7 +26,7 @@ from .metadata import OSVMeta, read_metadata
 from .orientation import rot_matrix
 from .osv_calibration import CameraCalib, read_osv_calibration
 from .project import build_map
-from .stitcher import blend, seam_weights, warp
+from .stitcher import blend, flow_blend, seam_weights, warp
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,18 @@ CAM1_TWEAK = (-1.4, -1.4, 1.4)
 # Lens rim is optically worst and most parallax-sensitive. Cropping below the
 # nominal ~210 deg FOV measurably improves seam agreement (0.53 -> 0.64).
 DEFAULT_FOV_DEG = 196.0
+
+# Lens radial model. The k1..k4 coefficients in the file are NOT usable as a
+# Brown series in theta: they produce a non-monotonic curve that puts the image
+# rim at 1142 px against a measured circle of ~1916 px. Pure equidistant is
+# close (rim at 1913 px), and this small series in normalised theta is a
+# refinement fitted against DJI's own export of this file.
+#
+# CAVEAT: fitted on one camera, one recording. Improves edge agreement with DJI
+# from 0.31 to 0.49 on frames 0 and 150, but only 0.23 -> 0.26 on frame 600.
+# Treat as provisional until validated across more cameras.
+LENS_MODEL: tuple[float, float] | str = (0.15, -0.05)
+FOCAL_SCALE = 1.0
 
 
 def align_vectors(a, b) -> np.ndarray:
@@ -93,6 +105,8 @@ class Stitcher360:
     width: int = 7680
     height: int = 3840
     fov_deg: float = DEFAULT_FOV_DEG
+    lens_model: object = LENS_MODEL
+    focal_scale: float = FOCAL_SCALE
     _cache: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -121,7 +135,8 @@ class Stitcher360:
             return hit
 
         common = dict(out_w=self.width, out_h=self.height, source="ypr",
-                      max_fov_deg=self.fov_deg, feather_deg=4.0)
+                      max_fov_deg=self.fov_deg, feather_deg=4.0,
+                      model=self.lens_model, focal_scale=self.focal_scale)
         m0 = build_map(self.calibs[0], R_extra=R, **common)
         m1 = build_map(self.calibs[1], R_extra=rot_matrix(*CAM1_TWEAK) @ R, **common)
         maps = [m0, m1]
@@ -132,10 +147,17 @@ class Stitcher360:
         return maps, weights
 
     def stitch(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
-               frame: int = 0) -> np.ndarray:
+               frame: int = 0, flow: bool = True) -> np.ndarray:
+        """Stitch one frame pair.
+
+        `flow=True` morphs across the seam to absorb parallax; set False for
+        a plain cross-fade (faster, but near objects will ghost at the seam).
+        """
         maps, weights = self.maps_for(frame)
-        return blend([warp(fisheye0, maps[0]), warp(fisheye1, maps[1])],
-                     maps, weights=weights)
+        warped = [warp(fisheye0, maps[0]), warp(fisheye1, maps[1])]
+        if flow:
+            return flow_blend(warped, maps, weights)
+        return blend(warped, maps, weights=weights)
 
     def seam_agreement(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
                        frame: int = 0) -> float:

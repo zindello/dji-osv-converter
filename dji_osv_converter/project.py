@@ -50,16 +50,48 @@ def extrinsic_matrix(cal: CameraCalib, source: str = "quat",
     return R.T if transpose else R
 
 
+def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "equidistant",
+               theta_max: float = np.radians(105.0)) -> np.ndarray:
+    """Map incidence angle to normalised radial distance.
+
+    'equidistant' (theta_d = theta) reproduces the measured image circle almost
+    exactly: fx * radians(105) = 1913 px against a circle of ~1916 px.
+
+    'poly' applies cal.k as a Brown-style series in theta. That is how these
+    coefficients are usually written, but for this data it is NOT valid - the
+    resulting function is non-monotonic (peaks near 60 deg then collapses,
+    putting the rim at 1142 px instead of 1913 px). A radial distortion curve
+    must increase monotonically, so the coefficients evidently mean something
+    else. Kept only for comparison.
+
+    'poly_norm' applies the same series to theta/theta_max, which keeps the
+    correction small and monotonic over the real range.
+    """
+    if model == "equidistant":
+        return theta
+    if isinstance(model, (tuple, list)):
+        # explicit (a, b) series in normalised theta, fitted empirically
+        a, b = model
+        tn2 = (theta / theta_max) ** 2
+        return theta * (1.0 + tn2 * (a + tn2 * b))
+    k1, k2, k3, k4 = cal.k
+    if model == "poly":
+        t2 = theta * theta
+    elif model == "poly_norm":
+        t2 = (theta / theta_max) ** 2
+    else:
+        raise ValueError(f"unknown lens model {model!r}")
+    return theta * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
+
+
 def project_directions(d_cam: np.ndarray, cal: CameraCalib,
-                       max_fov_deg: float = 220.0):
+                       max_fov_deg: float = 220.0, model: str = "equidistant"):
     """Project camera-frame direction vectors to fisheye pixel coordinates."""
     X, Y, Z = d_cam[..., 0], d_cam[..., 1], d_cam[..., 2]
     rxy = np.sqrt(X * X + Y * Y)
     theta = np.arctan2(rxy, Z)
 
-    k1, k2, k3, k4 = cal.k
-    t2 = theta * theta
-    theta_d = theta * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
+    theta_d = radial_map(theta, cal, model, np.radians(max_fov_deg / 2.0))
 
     with np.errstate(invalid="ignore", divide="ignore"):
         scale = np.where(rxy > 1e-12, theta_d / rxy, 0.0)
@@ -76,7 +108,8 @@ def build_map(cal: CameraCalib, out_w: int, out_h: int,
               R_extra: np.ndarray | None = None,
               source: str = "quat", order: str = "xyzw",
               transpose: bool = False, max_fov_deg: float = 220.0,
-              feather_deg: float = 8.0) -> CameraMap:
+              feather_deg: float = 8.0, model: str = "equidistant",
+              focal_scale: float = 1.0) -> CameraMap:
     """Build an equirectangular remap for one camera."""
     d = directions(out_h, out_w)
     R = extrinsic_matrix(cal, source, order, transpose)
@@ -84,7 +117,12 @@ def build_map(cal: CameraCalib, out_w: int, out_h: int,
         R = R @ R_extra
     d_cam = d @ R.T
 
-    u, v, valid = project_directions(d_cam, cal, max_fov_deg)
+    if focal_scale != 1.0:
+        import copy as _copy
+        cal = _copy.copy(cal)
+        cal.fx *= focal_scale
+        cal.fy *= focal_scale
+    u, v, valid = project_directions(d_cam, cal, max_fov_deg, model)
 
     # Coverage weight tapers off near the rim, where fisheye optics are worst.
     theta = np.arctan2(np.sqrt(d_cam[..., 0] ** 2 + d_cam[..., 1] ** 2), d_cam[..., 2])
@@ -107,4 +145,5 @@ def build_maps(cals: list[CameraCalib], out_w: int, out_h: int, **kw) -> list[Ca
     return maps
 
 
-__all__ = ["build_map", "build_maps", "extrinsic_matrix", "quat_matrix", "project_directions"]
+__all__ = ["build_map", "build_maps", "extrinsic_matrix", "quat_matrix",
+           "project_directions", "radial_map"]
