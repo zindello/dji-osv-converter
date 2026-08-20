@@ -38,7 +38,16 @@ const gl = cv.getContext('webgl');
 const hud = document.getElementById('hud');
 const drop = document.getElementById('drop');
 
-if (!gl) { document.body.innerHTML = '<p style="padding:40px">WebGL unavailable.</p>'; }
+function fail(msg){
+  drop.classList.remove('hide');
+  drop.innerHTML = '<div style="border-color:#a33;max-width:70ch">'
+    + '<b style="color:#f88">Viewer error</b><br><br>'
+    + '<pre style="white-space:pre-wrap;text-align:left;color:#fbb">'
+    + String(msg).replace(/[<&]/g, c => c==='<'?'&lt;':'&amp;') + '</pre></div>';
+  console.error(msg);
+}
+window.addEventListener('error', e => fail(e.message + '\n' + (e.error && e.error.stack || '')));
+if (!gl) fail('WebGL is unavailable in this browser.');
 
 const VS = `attribute vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }`;
 const FS = `
@@ -57,18 +66,27 @@ void main(){
   d = vec3(cy*d.x + sy*d.z, d.y, -sy*d.x + cy*d.z);  // yaw (Y axis)
   float lon = atan(d.x, -d.z);
   float lat = asin(clamp(d.y,-1.0,1.0));
-  gl_FragColor = texture2D(tex, vec2(lon/(2.0*PI)+0.5, 0.5 - lat/PI));
+  // fract() wraps longitude in-shader: required because NPOT textures cannot
+  // use GL_REPEAT in WebGL1 (doing so makes the texture incomplete -> black).
+  float u = fract(lon/(2.0*PI) + 0.5);
+  float v = clamp(0.5 - lat/PI, 0.0, 1.0);
+  gl_FragColor = texture2D(tex, vec2(u, v));
 }`;
 
 function sh(type, src){
   const s = gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
-  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    fail('Shader compile failed:\n' + gl.getShaderInfoLog(s));
+    throw new Error('shader');
+  }
   return s;
 }
 const prog = gl.createProgram();
 gl.attachShader(prog, sh(gl.VERTEX_SHADER,VS));
 gl.attachShader(prog, sh(gl.FRAGMENT_SHADER,FS));
-gl.linkProgram(prog); gl.useProgram(prog);
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) fail('Link failed:\n'+gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
 
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -111,16 +129,23 @@ function load(img){
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,src);
+  // NPOT-safe: no mipmaps, CLAMP_TO_EDGE on both axes. Longitude wrap is done
+  // with fract() in the fragment shader instead of GL_REPEAT.
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const err = gl.getError();
+  if (err !== gl.NO_ERROR) { fail('GL error uploading texture: 0x'+err.toString(16)); return; }
   drop.classList.add('hide');
   resize(); draw();
 }
 
 function openFile(f){
   const img = new Image();
-  img.onload = ()=>{ load(img); URL.revokeObjectURL(img.src); };
+  img.onload  = ()=>{ load(img); URL.revokeObjectURL(img.src); };
+  img.onerror = ()=> fail('Could not decode image: ' + f.name
+                        + '\n(browsers cannot open 16-bit PNG/TIFF; use JPEG or 8-bit PNG)');
   img.src = URL.createObjectURL(f);
 }
 document.getElementById('file').onchange = e => e.target.files[0] && openFile(e.target.files[0]);
