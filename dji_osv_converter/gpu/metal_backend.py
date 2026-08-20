@@ -176,14 +176,20 @@ class MetalBackend(GPUBackend):
                 logger.debug(f"Compiling Metal shaders: {shader_src}")
                 compiled = compile_metal_shaders(shader_src, shader_lib)
                 if compiled is None:
-                    logger.warning("Metal shader compilation failed")
+                    logger.debug("Metal shader compilation not available (xcrun not found?)")
+                    logger.info("Will use CPU fallback for color conversion")
                     return None
 
             # Load the compiled library
-            return load_metal_library(shader_lib)
+            lib = load_metal_library(shader_lib)
+            if lib is None:
+                logger.debug("Could not load compiled Metal library")
+                return None
+
+            return lib
 
         except Exception as e:
-            logger.error(f"Failed to load shader library: {e}")
+            logger.debug(f"Failed to load shader library: {e}")
             return None
 
     def _dispatch_color_kernel(
@@ -415,15 +421,47 @@ class MetalBackend(GPUBackend):
     def _cpu_convert_color_space(
         self, frame: GPUFrame, target_space: GPUColorSpace
     ) -> Optional[GPUFrame]:
-        """Fallback CPU color conversion (temporary while GPU implementation is completed)"""
+        """Fallback CPU color conversion using OpenCV"""
         try:
             import cv2
 
-            array = frame.gpu_handle if isinstance(frame.gpu_handle, np.ndarray) else frame.gpu_handle.to_numpy()
+            array = frame.gpu_handle
+            if not isinstance(array, np.ndarray):
+                array = np.asarray(array)
 
             if frame.color_space == GPUColorSpace.YUV420P and target_space == GPUColorSpace.RGB24:
-                # YUV → RGB
-                rgb = cv2.cvtColor(array, cv2.COLOR_YCrCb2RGB)
+                # Handle YUV420p data
+                # Layout: Y plane (width×height) + UV plane (width/2×height/2, stored as width×height/2)
+                height = frame.height
+                width = frame.width
+
+                if array.ndim == 1:
+                    # Raw bytes - needs conversion
+                    y_size = width * height
+                    uv_size = width * (height // 2)
+
+                    if len(array) != y_size + uv_size:
+                        logger.error(
+                            f"Invalid YUV420p size: expected {y_size + uv_size}, got {len(array)}"
+                        )
+                        return None
+
+                    y_plane = array[:y_size].reshape((height, width))
+                    uv_plane = array[y_size:].reshape((height // 2, width))
+
+                    # Create NV12 format for OpenCV
+                    # NV12 = Y plane (height×width) + UV interleaved (height/2×width)
+                    yuv_nv12 = np.vstack([y_plane, uv_plane])
+
+                    # Convert NV12 to RGB
+                    rgb = cv2.cvtColor(yuv_nv12, cv2.COLOR_YUV2RGB_NV12)
+                elif array.ndim == 2 and array.shape == (height + height // 2, width):
+                    # Already in proper NV12 format
+                    rgb = cv2.cvtColor(array, cv2.COLOR_YUV2RGB_NV12)
+                else:
+                    logger.error(f"Unexpected array shape for YUV420p: {array.shape}")
+                    return None
+
                 return GPUFrame(
                     gpu_handle=rgb,
                     width=frame.width,
@@ -431,11 +469,14 @@ class MetalBackend(GPUBackend):
                     color_space=target_space,
                 )
 
-            logger.warning(f"CPU fallback: {frame.color_space} -> {target_space}")
+            logger.warning(f"CPU fallback unsupported: {frame.color_space} -> {target_space}")
             return None
 
         except Exception as e:
             logger.error(f"CPU color conversion failed: {e}")
+            import traceback
+
+            logger.debug(traceback.format_exc())
             return None
 
     def undistort_warp(
