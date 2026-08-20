@@ -3,6 +3,10 @@
 Uses packet-level buffering to synchronize desynchronized streams.
 No seeking, no redundant decoding - just stream-aligned buffering.
 
+Supports multiple decoder backends:
+- VideoToolbox: Hardware HEVC decode on M3 Mac (~40-100× speedup)
+- CPU (PyAV): Software fallback (always available)
+
 Optional GPU-accelerated color conversion for 50-100× speedup on YUV→RGB.
 """
 
@@ -13,11 +17,14 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 import av
 
+from .decoder import factory as decoder_factory
+from .decoder.backend import DecoderBackend
+
 logger = logging.getLogger(__name__)
 
 
 class StreamBuffer:
-    """Per-stream packet buffer with frame extraction"""
+    """Per-stream packet buffer with background frame decoding"""
 
     def __init__(self, stream_idx: int, stream, gpu_backend: Optional[Any] = None):
         self.stream_idx = stream_idx
@@ -26,27 +33,35 @@ class StreamBuffer:
         self.decoded_frames = {}  # frame_num -> bytes
         self.max_frame_seen = -1
         self.lock = threading.Lock()
+        self.frame_ready = threading.Condition(self.lock)  # Signal when frame decoded
         self.gpu_backend = gpu_backend
+        self._decoder_thread = None
+        self._stop_decoder = False
+
+        # Start background decoder thread
+        self._start_decoder_thread()
 
     def add_packet(self, packet):
         """Add a packet to the buffer"""
         with self.lock:
             self.packets.append(packet)
 
-    def decode_up_to_frame(self, target_frame_num: int) -> bool:
-        """
-        Decode packets until we have target_frame_num.
-        Uses GPU-accelerated color conversion when available.
-        Returns True if target frame is now available.
-        """
-        with self.lock:
-            # If we already have it, return
-            if target_frame_num in self.decoded_frames:
-                return True
+    def _start_decoder_thread(self) -> None:
+        """Start background thread that decodes packets as they arrive"""
+        def decode_worker():
+            while not self._stop_decoder:
+                # Decode one packet if available
+                packet = None
+                with self.lock:
+                    if self.packets:
+                        packet = self.packets.popleft()
 
-            # Decode packets until we reach target frame
-            while self.packets:
-                packet = self.packets.popleft()
+                if packet is None:
+                    # No packets ready, sleep briefly
+                    threading.Event().wait(0.001)
+                    continue
+
+                # Decode packet (outside lock to avoid blocking demux thread)
                 try:
                     for frame in packet.decode():
                         if frame.pts is None:
@@ -59,18 +74,40 @@ class StreamBuffer:
                             logger.warning(f"Failed to convert frame {frame_num}, skipping")
                             continue
 
-                        self.decoded_frames[frame_num] = frame_bytes
-                        self.max_frame_seen = max(self.max_frame_seen, frame_num)
-
-                        # If we've reached target, we're done
-                        if frame_num >= target_frame_num:
-                            return True
+                        with self.frame_ready:
+                            self.decoded_frames[frame_num] = frame_bytes
+                            self.max_frame_seen = max(self.max_frame_seen, frame_num)
+                            self.frame_ready.notify_all()  # Wake up waiters
 
                 except Exception as e:
                     logger.error(f"Error decoding packet on stream {self.stream_idx}: {e}")
                     continue
 
-            return False
+        self._decoder_thread = threading.Thread(target=decode_worker, daemon=True)
+        self._decoder_thread.start()
+
+    def decode_up_to_frame(self, target_frame_num: int, timeout_s: float = 10.0) -> bool:
+        """
+        Wait for target_frame_num to be decoded by background thread.
+        Returns True if frame is now available, False on timeout.
+        """
+        import time
+        start = time.time()
+
+        while time.time() - start < timeout_s:
+            with self.lock:
+                if target_frame_num in self.decoded_frames:
+                    return True
+
+            # Sleep briefly to avoid busy-waiting
+            time.sleep(0.001)
+
+        return False
+
+    def get_frame(self, frame_num: int) -> Optional[bytes]:
+        """Get a decoded frame if available"""
+        with self.lock:
+            return self.decoded_frames.get(frame_num)
 
     def _convert_to_rgb(self, frame) -> Optional[bytes]:
         """
@@ -134,11 +171,6 @@ class StreamBuffer:
             logger.error(f"CPU conversion failed: {e}")
             return None
 
-    def get_frame(self, frame_num: int) -> Optional[bytes]:
-        """Get a decoded frame if available"""
-        with self.lock:
-            return self.decoded_frames.get(frame_num)
-
     def clear_old_frames(self, keep_from_frame: int) -> None:
         """Clear frames older than a certain frame number to save memory"""
         with self.lock:
@@ -148,15 +180,27 @@ class StreamBuffer:
 
 
 class HEVCDecoder:
-    """Decodes OSV file with PTS-based multi-stream synchronization"""
+    """Decodes OSV file with PTS-based multi-stream synchronization
 
-    def __init__(self, filepath: Path, gpu_backend: Optional[Any] = None):
+    Supports both old PyAV-based streaming decoder and new decoder backends
+    (VideoToolbox for hardware decode, CPU for fallback).
+    """
+
+    def __init__(
+        self,
+        filepath: Path,
+        gpu_backend: Optional[Any] = None,
+        use_decoder_backend: Optional[str] = None,
+    ):
         """
         Initialize decoder for OSV file.
 
         Args:
             filepath: Path to .OSV file
             gpu_backend: Optional GPU backend for accelerated color conversion
+            use_decoder_backend: Optional decoder backend name ("videotoolbox", "cpu").
+                                If None, will auto-detect best available.
+                                Set to "" to disable and use legacy PyAV decoder.
 
         Raises:
             FileNotFoundError: If file doesn't exist
@@ -174,9 +218,48 @@ class HEVCDecoder:
         self._stop_demux = False
         self._gpu_backend = gpu_backend
 
-        self._open_container()
-        self._discover_video_streams()
-        self._start_demux_thread()
+        # New decoder backend support
+        self._decoder_backend: Optional[DecoderBackend] = None
+        self._use_decoder_backend = use_decoder_backend
+
+        # Try to initialize decoder backend if requested
+        self._init_decoder_backend()
+
+        # If decoder backend available, use it; otherwise fall back to PyAV
+        if self._decoder_backend is not None:
+            logger.info(f"Using {self._decoder_backend.name} decoder backend")
+            self._decoder_backend.open_file(str(self.filepath))
+        else:
+            # Fallback to legacy PyAV-based decoder
+            logger.info("Using legacy PyAV decoder (no hardware acceleration)")
+            self._open_container()
+            self._discover_video_streams()
+            self._start_demux_thread()
+
+    def _init_decoder_backend(self) -> None:
+        """Try to initialize the specified decoder backend"""
+        if self._use_decoder_backend == "":
+            # Explicitly disabled
+            logger.debug("Decoder backend explicitly disabled")
+            return
+
+        try:
+            if self._use_decoder_backend is None:
+                # Auto-detect best available
+                logger.debug("Auto-detecting best decoder backend...")
+                self._decoder_backend = decoder_factory.create_best_decoder()
+            else:
+                # Use specified backend
+                logger.debug(f"Trying to create {self._use_decoder_backend} decoder backend...")
+                self._decoder_backend = decoder_factory.create_decoder(self._use_decoder_backend)
+
+            if self._decoder_backend is not None:
+                logger.info(f"Decoder backend {self._decoder_backend.name} initialized")
+            else:
+                logger.warning("No suitable decoder backend available, falling back to PyAV")
+        except Exception as e:
+            logger.warning(f"Failed to initialize decoder backend: {e}, falling back to PyAV")
+            self._decoder_backend = None
 
     def _open_container(self) -> None:
         """Open the OSV file as FFmpeg container"""
@@ -227,10 +310,25 @@ class HEVCDecoder:
 
     def get_video_stream_count(self) -> int:
         """Get number of video streams"""
+        if self._decoder_backend is not None:
+            return self._decoder_backend.get_stream_count()
         return len(self._video_streams)
 
     def get_video_stream_info(self, idx: int) -> dict:
         """Get information about a specific video stream"""
+        if self._decoder_backend is not None:
+            info = self._decoder_backend.get_stream_info(idx)
+            # Normalize keys for backward compatibility
+            return {
+                "index": info.get("index", idx),
+                "codec_name": info.get("codec_name", "unknown"),
+                "width": info["width"],
+                "height": info["height"],
+                "fps": info.get("fps", 0.0),
+                "duration_seconds": info.get("duration_seconds", 0),
+                "frame_count": info.get("total_frames", 0),
+            }
+
         if idx >= len(self._video_streams):
             raise IndexError(f"Stream index {idx} out of range")
 
@@ -255,33 +353,35 @@ class HEVCDecoder:
 
     def decode_frame_synchronously(self, frame_num: int, timeout_s: float = 10.0) -> Optional[Dict[int, bytes]]:
         """
-        Decode a specific frame from all streams (synchronously).
+        Wait for a frame from all streams.
 
-        Uses PTS-based buffering to keep streams synchronized.
+        Background decoder threads decode packets asynchronously.
+        This method waits for frames to be ready.
 
         Args:
-            frame_num: Frame number to decode (0-indexed)
+            frame_num: Frame number (0-indexed)
             timeout_s: Maximum wait time for all streams
 
         Returns:
-            Dict mapping stream_idx -> RGB24 frame bytes, or None on failure
+            Dict mapping stream_idx -> RGB24 frame bytes, or None on failure/timeout
         """
         import time
 
+        # Use decoder backend if available
+        if self._decoder_backend is not None:
+            return self._decoder_backend.decode_frame_all_streams(frame_num, timeout_s=timeout_s)
+
+        # Fallback to legacy PyAV decoder
         start_time = time.time()
+        logger.debug(f"[FRAME {frame_num}] Waiting from {len(self._stream_buffers)} streams")
 
-        # Tell all stream buffers to decode up to target frame
-        logger.debug(f"[FRAME {frame_num}] Requesting from {len(self._stream_buffers)} streams")
-
-        while True:
-            # Check if all streams have this frame
+        while time.time() - start_time < timeout_s:
+            # Check if all streams have decoded this frame
             all_ready = True
             for idx, buffer in self._stream_buffers.items():
                 if buffer.get_frame(frame_num) is None:
-                    # Try to decode more packets for this stream
-                    buffer.decode_up_to_frame(frame_num)
-                    if buffer.get_frame(frame_num) is None:
-                        all_ready = False
+                    all_ready = False
+                    break
 
             if all_ready:
                 # Got all streams
@@ -291,16 +391,17 @@ class HEVCDecoder:
                 logger.debug(f"[FRAME {frame_num}] Ready in {elapsed*1000:.0f}ms")
                 return result
 
-            # Timeout check
-            if time.time() - start_time > timeout_s:
-                logger.warning(f"[FRAME {frame_num}] Timeout after {timeout_s}s")
-                return None
-
             # Small sleep to avoid busy-waiting
             time.sleep(0.001)
 
+        logger.warning(f"[FRAME {frame_num}] Timeout after {timeout_s}s")
+        return None
+
     def get_total_frames(self) -> int:
         """Get total frame count from first video stream"""
+        if self._decoder_backend is not None:
+            return self._decoder_backend.get_total_frames()
+
         if not self._video_streams:
             return 0
 
@@ -317,9 +418,27 @@ class HEVCDecoder:
 
     def close(self) -> None:
         """Close the container and clean up"""
+        # Close decoder backend if active
+        if self._decoder_backend is not None:
+            self._decoder_backend.close()
+            self._decoder_backend = None
+            return
+
+        # Legacy PyAV cleanup
         self._stop_demux = True
+
+        # Stop all decoder threads
+        for buffer in self._stream_buffers.values():
+            buffer._stop_decoder = True
+
         if self._demux_thread:
             self._demux_thread.join(timeout=5)
+
+        # Wait for decoder threads
+        for buffer in self._stream_buffers.values():
+            if buffer._decoder_thread:
+                buffer._decoder_thread.join(timeout=5)
+
         if self._container:
             self._container.close()
             self._container = None
@@ -328,15 +447,26 @@ class HEVCDecoder:
 class FrameExtractor:
     """High-level interface for extracting synchronized frames from OSV"""
 
-    def __init__(self, osv_filepath: Path, gpu_backend: Optional[Any] = None):
+    def __init__(
+        self,
+        osv_filepath: Path,
+        gpu_backend: Optional[Any] = None,
+        use_decoder_backend: Optional[str] = None,
+    ):
         """
         Initialize frame extractor for an OSV file.
 
         Args:
             osv_filepath: Path to .OSV file
             gpu_backend: Optional GPU backend for accelerated color conversion
+            use_decoder_backend: Optional decoder backend name ("videotoolbox", "cpu").
+                                If None, will auto-detect best available.
         """
-        self.decoder = HEVCDecoder(osv_filepath, gpu_backend=gpu_backend)
+        self.decoder = HEVCDecoder(
+            osv_filepath,
+            gpu_backend=gpu_backend,
+            use_decoder_backend=use_decoder_backend,
+        )
         self._frame_cache = {}
 
     def get_frame(self, frame_num: int) -> Optional[Dict[int, bytes]]:

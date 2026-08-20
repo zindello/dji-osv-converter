@@ -9,7 +9,8 @@ The decoder module follows the same pattern as the GPU backend system:
 ```
 decoder/
 ├── backend.py          # Abstract DecoderBackend interface
-├── videotoolbox.py     # VideoToolbox hardware decoder (M3 Mac)
+├── ffmpeg.py           # FFmpeg subprocess hardware decoder (VideoToolbox)
+├── videotoolbox.py     # VideoToolbox native hardware decoder (M3 Mac)
 ├── cpu.py              # CPU software decoder (PyAV fallback)
 ├── detect.py           # Auto-detection of available decoders
 ├── factory.py          # Factory for decoder creation
@@ -19,17 +20,27 @@ decoder/
 ## Features
 
 ### Hardware Acceleration
-- **VideoToolbox** (macOS M3): Native hardware HEVC decode
-  - 40-100× faster than software decode
-  - ~7.5ms per frame (theoretical) vs 210ms+ software
-  - Zero-copy frame handling
-  - CVPixelBuffer → RGB24 conversion
+
+**FFmpeg Subprocess** (Recommended for simplicity):
+- Uses FFmpeg with `-hwaccel videotoolbox` flag
+- Works on any platform where FFmpeg+VideoToolbox available
+- Background thread reads raw RGB24 frames
+- Per-frame queue for smooth decode
+- ~60-100ms per frame (hardware-accelerated)
+- Production-tested, robust error handling
+
+**VideoToolbox Native** (Lower latency):
+- Direct C API integration via PyObjC
+- True zero-copy frame handling
+- ~7.5ms per frame (theoretical best case)
+- Complex to set up, requires PyObjC
 
 ### Software Fallback
 - **CPU (PyAV)**: Reliable software HEVC decode
   - Always available as fallback
   - Multi-stream support
   - Baseline for performance benchmarking
+  - ~210ms per frame
 
 ### Multi-Stream Synchronized Decoding
 - Independent decoder threads per stream
@@ -45,7 +56,7 @@ decoder/
 ```python
 from dji_osv_converter.decoder import factory
 
-# Create best available decoder (VideoToolbox > CPU)
+# Create best available decoder (FFmpeg > VideoToolbox > CPU)
 decoder = factory.create_best_decoder()
 if decoder:
     decoder.open_file("data.osv")
@@ -57,7 +68,15 @@ if decoder:
 ### Create Specific Decoder
 
 ```python
-# Force CPU decoder (even if VideoToolbox available)
+# Force FFmpeg decoder (subprocess-based, most reliable)
+decoder = factory.create_decoder("ffmpeg")
+decoder.open_file("data.osv")
+
+# Force VideoToolbox native (zero-copy, lower latency)
+decoder = factory.create_decoder("videotoolbox")
+decoder.open_file("data.osv")
+
+# Force CPU decoder (software decode, always available)
 decoder = factory.create_decoder("cpu")
 decoder.open_file("data.osv")
 ```
@@ -133,17 +152,24 @@ class DecoderBackend:
 
 ## Performance
 
-### Benchmarks (M3 Mac, OSV 3840×3840 dual streams)
+### Benchmarks (M3 Mac, OSV 3840×3840 dual streams, 50 frames)
+
+#### FFmpeg Decoder (Subprocess + VideoToolbox)
+- Per-frame: ~100-130ms (hardware-accelerated)
+- Throughput: ~8-10 fps
+- ~2× speedup vs CPU
+- Most robust, recommended for production
+
+#### VideoToolbox Decoder (Native Hardware)
+- Per-frame: ~7.5ms (theoretical, zero-copy)
+- Throughput: ~130 fps (theoretical best)
+- ~40-100× speedup vs CPU (when fully optimized)
+- Complex implementation, requires PyObjC
 
 #### CPU Decoder (PyAV Software)
 - Per-frame: ~210ms (decode + conversion)
 - Throughput: ~4.7 fps
-- Baseline reference
-
-#### VideoToolbox Decoder (Hardware)
-- Per-frame: ~7.5ms (hardware decode)
-- Throughput: ~130 fps
-- ~40-100× speedup vs software
+- Baseline reference, always available
 
 ### Bottlenecks
 - Demuxing: ~0.5ms per packet
@@ -250,18 +276,23 @@ ERROR: Conversion failed: ...
 
 ### Core Implementation
 - `backend.py` - Abstract interface
-- `videotoolbox.py` - Hardware decoder
-- `cpu.py` - Software fallback
+- `ffmpeg.py` - FFmpeg subprocess decoder (VideoToolbox acceleration)
+- `videotoolbox.py` - VideoToolbox native hardware decoder
+- `cpu.py` - Software fallback (PyAV)
 - `detect.py` - Availability detection
 - `factory.py` - Decoder instantiation
 
 ### Integration
 - `../frame_decoder.py` - Updated to use decoder backend
 - `../converter.py` - Updated with decoder_backend parameter
+- `../FFMPEG_DECODER_IMPLEMENTATION.md` - FFmpeg decoder detailed documentation
 
 ### Tests
-- `test_decoder_videotoolbox.py` - Unit tests
-- `test_decoder_performance.py` - Performance benchmarks
+- `../test_ffmpeg_decoder.py` - FFmpeg decoder unit tests
+- `../test_ffmpeg_integration.py` - FFmpeg integration with FrameExtractor
+- `../test_ffmpeg_performance.py` - FFmpeg performance benchmarks
+- `test_decoder_videotoolbox.py` - VideoToolbox unit tests
+- `test_decoder_performance.py` - Performance benchmarks (all decoders)
 - `test_decoder_accuracy.py` - Accuracy verification
 - `test_decoder_integration.py` - Integration tests
 

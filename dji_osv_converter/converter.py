@@ -25,6 +25,7 @@ from .stitch_opencv import create_stitcher
 from .stitch_gpu import GPUStitcher
 from .encoder_opencv import OpenCVEncoder
 from .gpu import factory as gpu_factory
+from .decoder import factory as decoder_factory
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,13 @@ class StitchingPipeline:
     OUTPUT_CODEC = "libx264"  # h.264 for now; HEVC has muxing issues on Apple Silicon
     OUTPUT_BITRATE = "40M"
 
-    def __init__(self, input_path: Path, output_path: Path, gpu_backend: Optional[str] = None):
+    def __init__(
+        self,
+        input_path: Path,
+        output_path: Path,
+        gpu_backend: Optional[str] = None,
+        decoder_backend: Optional[str] = None,
+    ):
         """
         Initialize pipeline for conversion.
 
@@ -47,6 +54,7 @@ class StitchingPipeline:
             input_path: Path to OSV file
             output_path: Path to output MP4 file
             gpu_backend: GPU backend to use ("metal", "cuda", "oneapi", or None for auto-detect)
+            decoder_backend: Decoder backend to use ("videotoolbox", "cpu", or None for auto-detect)
         """
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
@@ -57,6 +65,7 @@ class StitchingPipeline:
         self.gpu_stitcher: Optional[GPUStitcher] = None
         self.gpu_backend_name = gpu_backend
         self.gpu_backend = None
+        self.decoder_backend_name = decoder_backend
 
     def run(
         self,
@@ -89,7 +98,11 @@ class StitchingPipeline:
 
             # Step 1: Initialize frame extractor
             logger.info("Step 1: Initializing frame extractor...")
-            self.frame_extractor = FrameExtractor(self.input_path, gpu_backend=self.gpu_backend)
+            self.frame_extractor = FrameExtractor(
+                self.input_path,
+                gpu_backend=self.gpu_backend,
+                use_decoder_backend=self.decoder_backend_name,
+            )
             stream_info = self.frame_extractor.get_stream_info()
             logger.info(f"  Found {stream_info['num_streams']} video streams")
             logger.info(f"  Total frames: {stream_info['total_frames']}")

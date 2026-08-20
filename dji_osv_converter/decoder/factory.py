@@ -30,7 +30,11 @@ def create_decoder(target: str) -> Optional[DecoderBackend]:
         return None
 
     # Lazy import to avoid dependency on specific frameworks
-    if target == "videotoolbox":
+    if target == "ffmpeg":
+        from .ffmpeg import FFmpegDecoder
+
+        decoder = FFmpegDecoder()
+    elif target == "videotoolbox":
         from .videotoolbox import VideoToolboxDecoder
 
         decoder = VideoToolboxDecoder()
