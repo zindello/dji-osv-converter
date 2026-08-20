@@ -69,6 +69,16 @@ def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "equidistant",
     """
     if model == "equidistant":
         return theta
+    if isinstance(model, (tuple, list)) and len(model) == 2 and model[0] == "odd":
+        # r = c0*th + c1*th^3 + c2*th^5 + c3*th^7, the classic fisheye series.
+        # radial_map returns theta_d, and the caller multiplies by fx, so divide
+        # the polynomial through by fx here.
+        c = model[1]
+        t = theta
+        r = c[0] * t
+        for i, ci in enumerate(c[1:], start=1):
+            r = r + ci * t ** (2 * i + 1)
+        return r / max(cal.fx, 1e-9)
     if isinstance(model, (tuple, list)):
         # explicit (a, b) series in normalised theta, fitted empirically
         a, b = model

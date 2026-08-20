@@ -30,9 +30,20 @@ from .stitcher import blend, flow_blend, seam_weights, warp
 
 logger = logging.getLogger(__name__)
 
-# Camera 1's extrinsics need a small empirical correction; found by maximising
-# inter-camera agreement in the overlap band (gains ~0.035 NCC).
-CAM1_TWEAK = (-1.4, -1.4, 1.4)
+# Per-camera extrinsic corrections (yaw, pitch, roll in degrees).
+#
+# Found by aligning EACH camera's warped hemisphere to DJI's export
+# independently, rather than by maximising inter-camera seam agreement. That
+# distinction matters: the seam metric only sees the ~8% overlap band, so it
+# cannot observe a rotation that moves a whole hemisphere, and it wrongly
+# suggested camera 0 needed no correction at all. Aligning per camera against
+# ground truth lifted camera 0 from 0.759 to 0.905 NCC and camera 1 from
+# 0.930 to 0.943.
+CAM_TWEAK = {
+    0: (-1.88, -0.54, 1.66),
+    1: (-1.20, -1.21, 1.28),
+}
+CAM1_TWEAK = CAM_TWEAK[1]   # retained for older callers
 
 # Lens rim is optically worst and most parallax-sensitive. Cropping below the
 # nominal ~210 deg FOV measurably improves seam agreement (0.53 -> 0.64).
@@ -47,7 +58,23 @@ DEFAULT_FOV_DEG = 196.0
 # CAVEAT: fitted on one camera, one recording. Improves edge agreement with DJI
 # from 0.31 to 0.49 on frames 0 and 150, but only 0.23 -> 0.26 on frame 600.
 # Treat as provisional until validated across more cameras.
-LENS_MODEL: tuple[float, float] | str = (0.15, -0.05)
+# Odd-polynomial fisheye series r = c0*th + c1*th^3 + c2*th^5 + c3*th^7,
+# recovered per camera from dense correspondence against DJI's own export:
+# where our pixel at angle th shows the content DJI places at th', we know
+# r_dji(th') = r_ours(th), which samples DJI's curve directly across the whole
+# field rather than only at the seam. Fits to 2.8 px (cam0) and 0.93 px (cam1)
+# RMS, and the leading term lands on the file's fx (1057 vs 1044, 1045 vs 1047).
+#
+# Equisolid, stereographic and orthographic were all ruled out (45-145 px RMS).
+#
+# CAVEAT: fitted for this camera against one export. The k1..k4 stored in the
+# OSV do NOT reproduce these coefficients by any simple scaling, so their
+# meaning is still undecoded - until it is, other cameras need their own fit.
+LENS_POLY = {
+    0: ("odd", [1057.15, 38.83, 5.59, -3.58]),
+    1: ("odd", [1044.95, 55.84, 1.54, -3.74]),
+}
+LENS_MODEL = LENS_POLY
 FOCAL_SCALE = 1.0
 
 
@@ -105,7 +132,7 @@ class Stitcher360:
     width: int = 7680
     height: int = 3840
     fov_deg: float = DEFAULT_FOV_DEG
-    lens_model: object = LENS_MODEL
+    lens_model: object = field(default_factory=lambda: dict(LENS_POLY))
     focal_scale: float = FOCAL_SCALE
     _cache: dict = field(default_factory=dict, repr=False)
 
@@ -136,9 +163,16 @@ class Stitcher360:
 
         common = dict(out_w=self.width, out_h=self.height, source="ypr",
                       max_fov_deg=self.fov_deg, feather_deg=4.0,
-                      model=self.lens_model, focal_scale=self.focal_scale)
-        m0 = build_map(self.calibs[0], R_extra=R, **common)
-        m1 = build_map(self.calibs[1], R_extra=rot_matrix(*CAM1_TWEAK) @ R, **common)
+                      focal_scale=self.focal_scale)
+
+        def model_for(i):
+            lm = self.lens_model
+            return lm[i] if isinstance(lm, dict) else lm
+
+        m0 = build_map(self.calibs[0], R_extra=rot_matrix(*CAM_TWEAK[0]) @ R,
+                       model=model_for(0), **common)
+        m1 = build_map(self.calibs[1], R_extra=rot_matrix(*CAM_TWEAK[1]) @ R,
+                       model=model_for(1), **common)
         maps = [m0, m1]
         weights = seam_weights(maps, band_px=0.038 * self.width)
         if len(self._cache) > 4:
