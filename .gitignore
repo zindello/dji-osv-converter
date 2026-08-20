@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.DS_Store
+*.egg-info/
+output/
+osv_example/*.OSV
+osv_example/*.mp4
+osv_example/*.WAV
+osv_example/*.LRF
+osv_example/*.bin

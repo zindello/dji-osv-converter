@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>360 Equirectangular Viewer</title>
+<style>
+  html,body { margin:0; height:100%; background:#111; color:#ddd;
+              font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; overflow:hidden; }
+  #c { display:block; width:100vw; height:100vh; cursor:grab; }
+  #c.drag { cursor:grabbing; }
+  #ui { position:fixed; top:0; left:0; right:0; padding:10px 14px;
+        background:linear-gradient(#000c,#0000); display:flex; gap:14px; align-items:center; z-index:5; }
+  #drop { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+          background:#111; z-index:10; text-align:center; }
+  #drop.hide { display:none; }
+  #drop div { border:2px dashed #555; padding:40px 60px; border-radius:10px; }
+  b { color:#fff; }
+  #hud { margin-left:auto; font-variant-numeric:tabular-nums; color:#9ad; }
+  input[type=file]{ color:#ddd; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <input type="file" id="file" accept="image/*">
+  <span>drag to pan · scroll to zoom</span>
+  <span id="hud"></span>
+</div>
+<canvas id="c"></canvas>
+<div id="drop"><div>
+  <b>360° Equirectangular Viewer</b><br><br>
+  Drop an equirectangular image here, or use the file picker above.<br>
+  <small style="color:#888">Expects 2:1 aspect (e.g. 7680×3840)</small>
+</div></div>
+
+<script>
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl');
+const hud = document.getElementById('hud');
+const drop = document.getElementById('drop');
+
+if (!gl) { document.body.innerHTML = '<p style="padding:40px">WebGL unavailable.</p>'; }
+
+const VS = `attribute vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }`;
+const FS = `
+precision highp float;
+uniform sampler2D tex;
+uniform vec2  res;
+uniform float yaw, pitch, fov;
+const float PI = 3.14159265359;
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*res) / res.y;
+  float f = 1.0 / tan(fov*0.5);
+  vec3 d = normalize(vec3(uv.x, uv.y, -f));          // camera-space ray
+  float cp = cos(pitch), sp = sin(pitch);
+  d = vec3(d.x, cp*d.y - sp*d.z, sp*d.y + cp*d.z);   // pitch (X axis)
+  float cy = cos(yaw), sy = sin(yaw);
+  d = vec3(cy*d.x + sy*d.z, d.y, -sy*d.x + cy*d.z);  // yaw (Y axis)
+  float lon = atan(d.x, -d.z);
+  float lat = asin(clamp(d.y,-1.0,1.0));
+  gl_FragColor = texture2D(tex, vec2(lon/(2.0*PI)+0.5, 0.5 - lat/PI));
+}`;
+
+function sh(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER,FS));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const loc = gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+const U = n => gl.getUniformLocation(prog,n);
+let yaw=0, pitch=0, fov=1.4, tex=null, imgW=0, imgH=0;
+
+function resize(){
+  const d = window.devicePixelRatio||1;
+  cv.width = cv.clientWidth*d; cv.height = cv.clientHeight*d;
+  gl.viewport(0,0,cv.width,cv.height);
+}
+window.addEventListener('resize', ()=>{resize();draw();});
+
+function draw(){
+  if(!tex) return;
+  gl.uniform2f(U('res'), cv.width, cv.height);
+  gl.uniform1f(U('yaw'), yaw);
+  gl.uniform1f(U('pitch'), pitch);
+  gl.uniform1f(U('fov'), fov);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  hud.textContent = `${imgW}×${imgH}  yaw ${(yaw*180/Math.PI).toFixed(0)}°  `
+                  + `pitch ${(pitch*180/Math.PI).toFixed(0)}°  fov ${(fov*180/Math.PI).toFixed(0)}°`;
+}
+
+function load(img){
+  const max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  let src = img; imgW = img.width; imgH = img.height;
+  if (img.width > max){                       // downscale oversized images to fit GPU limit
+    const k = max/img.width;
+    const cc = document.createElement('canvas');
+    cc.width = max; cc.height = Math.round(img.height*k);
+    cc.getContext('2d').drawImage(img,0,0,cc.width,cc.height);
+    src = cc;
+  }
+  if(!tex) tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,src);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  drop.classList.add('hide');
+  resize(); draw();
+}
+
+function openFile(f){
+  const img = new Image();
+  img.onload = ()=>{ load(img); URL.revokeObjectURL(img.src); };
+  img.src = URL.createObjectURL(f);
+}
+document.getElementById('file').onchange = e => e.target.files[0] && openFile(e.target.files[0]);
+document.addEventListener('dragover', e=>e.preventDefault());
+document.addEventListener('drop', e=>{ e.preventDefault();
+  if(e.dataTransfer.files[0]) openFile(e.dataTransfer.files[0]); });
+
+let dragging=false, lx=0, ly=0;
+cv.addEventListener('mousedown', e=>{dragging=true;lx=e.clientX;ly=e.clientY;cv.classList.add('drag');});
+window.addEventListener('mouseup', ()=>{dragging=false;cv.classList.remove('drag');});
+window.addEventListener('mousemove', e=>{
+  if(!dragging) return;
+  yaw   -= (e.clientX-lx)*0.0025*(fov/1.4);
+  pitch += (e.clientY-ly)*0.0025*(fov/1.4);
+  pitch = Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, pitch));
+  lx=e.clientX; ly=e.clientY; draw();
+});
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  fov = Math.max(0.15, Math.min(2.8, fov * (1 + e.deltaY*0.0015)));
+  draw();
+}, {passive:false});
+resize();
+</script>
+</body>
+</html>
