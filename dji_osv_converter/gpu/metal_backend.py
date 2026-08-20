@@ -115,17 +115,15 @@ class MetalBackend(GPUBackend):
         Uses GPU-accelerated YUV↔RGB conversion (~100ms instead of 5-7 seconds).
         """
         try:
-            from Metal import MTLComputePipelineState
-
-            if not self.device:
+            if not self.device or not self.command_queue:
                 logger.error("Metal device not initialized")
                 return None
 
-            # Load and compile Metal shaders
+            # Load shader library
             shader_lib = self._get_shader_library()
             if shader_lib is None:
-                logger.error("Failed to load Metal shaders")
-                return None
+                logger.debug("Metal shader library not available, using CPU fallback")
+                return self._cpu_convert_color_space(frame, target_space)
 
             # Select kernel based on conversion direction
             if frame.color_space == GPUColorSpace.YUV420P and target_space == GPUColorSpace.RGB24:
@@ -140,39 +138,42 @@ class MetalBackend(GPUBackend):
             kernel_func = shader_lib.newFunctionWithName_(kernel_name)
             if kernel_func is None:
                 logger.error(f"Shader kernel not found: {kernel_name}")
-                return None
+                return self._cpu_convert_color_space(frame, target_space)
 
             # Create compute pipeline
             pipeline_state = self.device.newComputePipelineStateWithFunction_error_(kernel_func, None)
             if pipeline_state is None:
-                logger.error(f"Failed to create pipeline state for {kernel_name}")
-                return None
+                logger.error(f"Failed to create pipeline for {kernel_name}")
+                return self._cpu_convert_color_space(frame, target_space)
 
-            # TODO: Implement texture creation and kernel dispatch
-            logger.debug(f"Metal shader {kernel_name} compiled successfully")
-
-            # For now, fallback to CPU while we complete GPU implementation
+            # TODO: Implement full GPU texture creation and kernel dispatch
+            # For now, use CPU fallback while completing GPU pipeline
+            logger.debug(f"Metal kernel {kernel_name} ready, using CPU fallback (TODO: GPU dispatch)")
             return self._cpu_convert_color_space(frame, target_space)
 
         except Exception as e:
             logger.error(f"Metal color conversion failed: {e}")
-            return None
+            return self._cpu_convert_color_space(frame, target_space)
 
     def _get_shader_library(self):
-        """Load Metal shader library"""
+        """Load or compile Metal shader library"""
         try:
             from pathlib import Path
+            from .metal_compiler import compile_metal_shaders, load_metal_library
 
-            # Load pre-compiled metal library or compile on demand
-            shader_path = Path(__file__).parent / "metal_shaders.metal"
+            shader_src = Path(__file__).parent / "metal_shaders.metal"
+            shader_lib = shader_src.with_suffix(".metallib")
 
-            if not shader_path.exists():
-                logger.error(f"Metal shader file not found: {shader_path}")
-                return None
+            # If compiled version doesn't exist, compile it
+            if not shader_lib.exists():
+                logger.debug(f"Compiling Metal shaders: {shader_src}")
+                compiled = compile_metal_shaders(shader_src, shader_lib)
+                if compiled is None:
+                    logger.warning("Metal shader compilation failed")
+                    return None
 
-            # TODO: Compile metal_shaders.metal to .metallib
-            logger.debug(f"Metal shader library: {shader_path}")
-            return None  # Placeholder - will return compiled library
+            # Load the compiled library
+            return load_metal_library(shader_lib)
 
         except Exception as e:
             logger.error(f"Failed to load shader library: {e}")

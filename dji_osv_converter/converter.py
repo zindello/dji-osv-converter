@@ -22,6 +22,7 @@ from .frame_decoder import FrameExtractor
 from .protobuf_schema import FrameMetadataParser
 from .stitch_dualstitcher import DualStitcher, StitcherConfig, DualStitcherError
 from .stitch_opencv import create_stitcher
+from .gpu import factory as gpu_factory
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,14 @@ class StitchingPipeline:
     OUTPUT_CODEC = "libx264"  # h.264 for now; HEVC has muxing issues on Apple Silicon
     OUTPUT_BITRATE = "40M"
 
-    def __init__(self, input_path: Path, output_path: Path):
+    def __init__(self, input_path: Path, output_path: Path, gpu_backend: Optional[str] = None):
         """
         Initialize pipeline for conversion.
 
         Args:
             input_path: Path to OSV file
             output_path: Path to output MP4 file
+            gpu_backend: GPU backend to use ("metal", "cuda", "oneapi", or None for auto-detect)
         """
         self.input_path = Path(input_path)
         self.output_path = Path(output_path)
@@ -50,6 +52,8 @@ class StitchingPipeline:
         self.metadata_parser = FrameMetadataParser()
         self.stitcher: Optional[DualStitcher] = None
         self.opencv_stitcher = None
+        self.gpu_backend_name = gpu_backend
+        self.gpu_backend = None
 
     def run(
         self,
@@ -76,9 +80,13 @@ class StitchingPipeline:
             logger.info(f"  Output: {self.output_path}")
             logger.info(f"  Temp dir: {temp_dir}")
 
+            # Step 0: Initialize GPU backend (optional but recommended)
+            logger.info("Step 0: Checking for GPU acceleration...")
+            self._initialize_gpu_backend()
+
             # Step 1: Initialize frame extractor
             logger.info("Step 1: Initializing frame extractor...")
-            self.frame_extractor = FrameExtractor(self.input_path)
+            self.frame_extractor = FrameExtractor(self.input_path, gpu_backend=self.gpu_backend)
             stream_info = self.frame_extractor.get_stream_info()
             logger.info(f"  Found {stream_info['num_streams']} video streams")
             logger.info(f"  Total frames: {stream_info['total_frames']}")
@@ -206,6 +214,28 @@ class StitchingPipeline:
 
             if self.frame_extractor:
                 self.frame_extractor.close()
+
+    def _initialize_gpu_backend(self) -> None:
+        """Initialize GPU backend for color conversion acceleration"""
+        try:
+            if self.gpu_backend_name:
+                # User specified a GPU backend
+                logger.info(f"  Using GPU backend: {self.gpu_backend_name}")
+                self.gpu_backend = gpu_factory.create_backend(self.gpu_backend_name)
+            else:
+                # Auto-detect best GPU
+                self.gpu_backend = gpu_factory.create_best_backend()
+
+            if self.gpu_backend and self.gpu_backend.initialize():
+                logger.info(f"  GPU acceleration enabled: {self.gpu_backend.name}")
+            else:
+                logger.info("  No GPU available, using CPU (slow mode)")
+                self.gpu_backend = None
+
+        except Exception as e:
+            logger.warning(f"Failed to initialize GPU backend: {e}")
+            logger.info("  Using CPU fallback")
+            self.gpu_backend = None
 
     def _extract_metadata_stream(self, output_path: Path) -> None:
         """Extract protobuf metadata stream from OSV file"""
