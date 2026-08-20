@@ -25,9 +25,9 @@ class GPUCodec(Enum):
 
 class GPUColorSpace(Enum):
     """Supported color spaces"""
-    RGB24 = "rgb24"
-    YUV420P = "yuv420p"
-    YUV420P10 = "yuv420p10"
+    YUV420P = "yuv420p"       # 8-bit YUV 4:2:0 (most common)
+    YUV420P10 = "yuv420p10"   # 10-bit YUV 4:2:0 (high quality)
+    RGB24 = "rgb24"           # RGB (for display only, avoid in pipeline)
 
 
 class GPUFrame:
