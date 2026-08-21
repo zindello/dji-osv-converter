@@ -189,7 +189,14 @@ u, v    = <b>fx</b>&middot;x'' + <b>cx</b> ,  <b>fy</b>&middot;y'' + <b>cy</b></
   </section>
 
   <section>
-    <h2><span class="n">06</span>Status</h2>
+    <h2><span class="n">06</span>The code &mdash; OSV to one 360 frame</h2>
+    <p>The whole pipeline, top to bottom. Format and metadata are read in pure Python (<code>osv_mp4.py</code>, alongside); only the two HEVC frames touch a codec. About 120 lines.</p>
+    <pre style="max-height:520px;overflow:auto"><code class="mono" id="code">__POC_CODE__</code></pre>
+    <p class="mut">The pure-Python MP4 reader (<code>osv_mp4.py</code>), the f-theta projection and the multi-band blend are separate modules in the repository; this script wires them together.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">07</span>Status</h2>
     <p>Fully decoded: container, both <code>CAM meta</code> tracks, the f-theta lens model, audio, thumbnail. Undecoded but unnecessary: the two <code>dbgi</code> debug tracks. The conversion needs none of it. To go from stills to video: level every frame and lock heading for a stable sphere, encode HEVC 10-bit with equirectangular spherical metadata, and mux the stereo audio.</p>
     <div class="foot mono">Read from the binary and the file &mdash; no vendor SDK. Camera: DJI Osmo 360 &middot; sensor OmniVision OV68A40.</div>
   </section>
