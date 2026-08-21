@@ -1,0 +1,258 @@
+<title>Decoding DJI .OSV</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root{
+    --bg:#0c0f14; --bg2:#12161d; --panel:#161b23; --line:#242c37;
+    --ink:#e9edf3; --mut:#95a1b2; --faint:#697588;
+    --amber:#e6a344; --amber-soft:#e6a34419; --teal:#4ec5ac; --red:#e0625e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+  a{color:var(--amber);text-decoration:none;border-bottom:1px solid #e6a34455}
+  .wrap{max-width:940px;margin:0 auto;padding:0 22px}
+  /* hero */
+  header.hero{border-bottom:1px solid var(--line);background:
+    radial-gradient(120% 100% at 50% -10%, #1b2230 0%, var(--bg) 60%)}
+  .hero .wrap{padding:46px 22px 30px}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--amber)}
+  h1{font-size:clamp(30px,5vw,46px);line-height:1.08;margin:.35em 0 .3em;font-weight:600;
+    letter-spacing:-.02em;text-wrap:balance}
+  .lede{color:var(--mut);font-size:18px;max-width:64ch;margin:0}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}
+  .chip{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--mut);
+    border:1px solid var(--line);background:var(--panel);border-radius:100px;padding:5px 12px}
+  .chip b{color:var(--teal);font-weight:500}
+  /* viewer figure */
+  figure{margin:26px 0}
+  .stage{position:relative;width:100%;aspect-ratio:2/1;background:#000;border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;user-select:none}
+  .stage canvas,.stage img{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .stage canvas{cursor:grab;touch-action:none}
+  .stage canvas.drag{cursor:grabbing}
+  .stage img{object-fit:cover}
+  .badge{position:absolute;top:10px;left:10px;z-index:3;font-family:"IBM Plex Mono",monospace;
+    font-size:11.5px;font-weight:600;letter-spacing:.04em;padding:4px 10px;border-radius:6px;
+    background:#000a;backdrop-filter:blur(4px);color:var(--teal)}
+  figcaption{color:var(--faint);font-size:13.5px;margin-top:10px;text-align:center}
+  /* A/B */
+  .ab .top{clip-path:inset(0 calc(100% - var(--split,50%)) 0 0)}
+  .divider{position:absolute;top:0;bottom:0;left:var(--split,50%);width:2px;background:var(--amber);
+    z-index:5;cursor:ew-resize;box-shadow:0 0 0 1px #0007}
+  .divider::after{content:"";position:absolute;top:50%;left:50%;width:30px;height:30px;
+    transform:translate(-50%,-50%);border-radius:50%;background:var(--amber);box-shadow:0 2px 10px #000a}
+  .tagL{position:absolute;top:10px;left:10px;color:var(--amber)}
+  .tagR{position:absolute;top:10px;right:10px;color:var(--mut)}
+  .tagL,.tagR{z-index:4;font-family:"IBM Plex Mono",monospace;font-size:11.5px;font-weight:600;
+    padding:4px 10px;border-radius:6px;background:#000a;backdrop-filter:blur(4px)}
+  .fbtns{display:flex;gap:6px;justify-content:center;margin-top:10px;flex-wrap:wrap}
+  .fbtns button{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--mut);
+    background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 11px;cursor:pointer}
+  .fbtns button.on{border-color:var(--amber);color:var(--ink);background:var(--amber-soft)}
+  /* prose */
+  main .wrap{padding:8px 22px 70px}
+  section{padding-top:30px}
+  h2{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+    font-family:"IBM Plex Mono",monospace;color:var(--amber);margin:34px 0 6px}
+  h2 .n{color:var(--faint);margin-right:10px}
+  h3{font-size:19px;font-weight:600;margin:22px 0 6px;letter-spacing:-.01em}
+  p{margin:10px 0;max-width:68ch}
+  .mut{color:var(--mut)}
+  code{font-family:"IBM Plex Mono",monospace;font-size:.88em;background:var(--amber-soft);
+    color:var(--amber);padding:1px 5px;border-radius:4px}
+  pre{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:16px 18px;
+    overflow-x:auto;font-family:"IBM Plex Mono",monospace;font-size:13px;line-height:1.7;color:#d6dde7}
+  pre .c{color:var(--faint)}
+  pre .k{color:var(--amber)}
+  pre b{color:var(--teal);font-weight:500}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;display:block;overflow-x:auto}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--faint);font-weight:500}
+  td.f{font-family:"IBM Plex Mono",monospace;color:var(--teal);white-space:nowrap}
+  tr:last-child td{border-bottom:0}
+  .callout{border-left:2px solid var(--amber);background:var(--amber-soft);border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:16px 0}
+  .callout b{color:var(--amber)}
+  ul{padding-left:20px} li{margin:7px 0;max-width:66ch}
+  .foot{border-top:1px solid var(--line);color:var(--faint);font-size:13px;padding:22px 0 0;margin-top:40px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<header class="hero"><div class="wrap">
+  <div class="eyebrow">Reverse engineering &middot; DJI Osmo 360</div>
+  <h1>Decoding the <span class="mono" style="color:var(--amber)">.OSV</span> dual-fisheye format</h1>
+  <p class="lede">DJI's Osmo 360 records a proprietary file only DJI Studio will stitch. Here is the container, the per-unit calibration, the lens model read from DJI's binary, and a pure-Python path from one <code>.OSV</code> to an 8K equirectangular 360 &mdash; every number taken from the file, so it generalises across camera units.</p>
+  <div class="chips">
+    <span class="chip">2&times; HEVC <b>3840&sup2;</b> 10-bit</span>
+    <span class="chip">f-theta lens, <b>5+2</b> terms</span>
+    <span class="chip">format decode <b>libav-free</b></span>
+    <span class="chip">output <b>7680&times;3840</b></span>
+  </div>
+</div></header>
+
+<main><div class="wrap">
+
+  <figure>
+    <div class="stage" id="poc">
+      <canvas id="gl"></canvas>
+      <div class="badge">our stitch &middot; drag to look &middot; scroll to zoom</div>
+    </div>
+    <figcaption>One frame from the <code>.OSV</code>, stitched by the pure-Python pipeline below &mdash; f-theta projection, gravity-levelled, multi-band blended. Interactive 360.</figcaption>
+  </figure>
+
+  <section>
+    <h2><span class="n">01</span>The container</h2>
+    <p><code>.OSV</code> is a plain MP4. It holds eight tracks &mdash; two raw fisheye videos, audio, four DJI metadata/debug tracks, and a thumbnail:</p>
+    <table><thead><tr><th>#</th><th>kind</th><th>codec</th><th>what it is</th></tr></thead><tbody>
+      <tr><td class="f">0,1</td><td>video</td><td class="f">HEVC Main10</td><td>the two fisheyes, 3840&times;3840, 10-bit, &gt;180&deg; each</td></tr>
+      <tr><td class="f">2</td><td>audio</td><td class="f">AAC</td><td>stereo 48&nbsp;kHz (a 16-bit PCM <code>.WAV</code> sits alongside)</td></tr>
+      <tr><td class="f">3</td><td>data</td><td class="f">djmd</td><td><b>calibration + per-frame orientation</b> &mdash; the useful one</td></tr>
+      <tr><td class="f">4</td><td>data</td><td class="f">djmd</td><td>per-frame exposure / white-balance telemetry</td></tr>
+      <tr><td class="f">5,6</td><td>data</td><td class="f">dbgi</td><td>sensor debug (OmniVision OV68A40); not needed</td></tr>
+      <tr><td class="f">7</td><td>video</td><td class="f">MJPEG</td><td>688&times;344 thumbnail</td></tr>
+    </tbody></table>
+    <p>An MP4 is a tree of boxes; a track's samples are located through its sample tables. That is all pure Python &mdash; no codec &mdash; so the whole format, including DJI's metadata, reads with no <code>ffmpeg</code> at all. Only the HEVC pixels need a decoder, and that is libavcodec in-process, never the binary.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">02</span>The metadata &mdash; per-unit calibration</h2>
+    <p>Track&nbsp;3's samples are protobuf. Sample&nbsp;0 is a header carrying this specific camera's factory calibration; every later sample carries that frame's orientation. Field <em>numbers</em> survive in the wire format even without the schema; the names are ours.</p>
+    <h3>Calibration block <span class="mono" style="color:var(--teal)">2.6.&lt;n&gt;</span></h3>
+    <table><thead><tr><th>field</th><th>meaning</th></tr></thead><tbody>
+      <tr><td class="f">.1 .2 .3 .4</td><td><code>fx fy cx cy</code> &mdash; focal length, principal point</td></tr>
+      <tr><td class="f">.5 .6 .7 .8</td><td>radial distortion <code>k1 k2 k3 k4</code></td></tr>
+      <tr><td class="f">.15</td><td>radial distortion <code>k5</code> &mdash; <b>stored apart from k1..k4</b></td></tr>
+      <tr><td class="f">.20</td><td>tangential distortion <code>p1 p2</code></td></tr>
+      <tr><td class="f">.12 .13 .14</td><td>extrinsic yaw / pitch / roll</td></tr>
+      <tr><td class="f">.21 / .28</td><td>extrinsic orientation as a unit quaternion (no gimbal lock at pitch&asymp;90&deg;)</td></tr>
+      <tr><td class="f">.22 .23</td><td>boundary points of the valid image circle</td></tr>
+    </tbody></table>
+    <div class="callout"><b>The gotcha that hides the whole model:</b> the radial polynomial has <b>five</b> terms, and the fifth lives in field&nbsp;15, not beside <code>.5&ndash;.8</code>. Read only four and the curve is non-monotonic &mdash; which is exactly why these coefficients look useless until you find the fifth.</div>
+    <h3>Per-frame orientation (track 3)</h3>
+    <table><thead><tr><th>field</th><th>meaning</th></tr></thead><tbody>
+      <tr><td class="f">3.2.9</td><td>orientation quaternion for the frame (rig&rarr;world)</td></tr>
+      <tr><td class="f">3.2.10</td><td>gravity vector (levels the horizon)</td></tr>
+      <tr><td class="f">3.3.2.1.3</td><td>~34 high-rate IMU quaternions spanning the sensor readout</td></tr>
+    </tbody></table>
+  </section>
+
+  <section>
+    <h2><span class="n">03</span>The lens model &mdash; DJI's f-theta</h2>
+    <p>Read straight out of DJI Studio's binary (<code class="mono">CameraModel::project</code>). For a camera-frame ray <code>(X,Y,Z)</code>:</p>
+<pre><span class="c"># incidence angle, then the five-term radial polynomial (raw radians)</span>
+theta   = atan2( sqrt(X&sup2; + Y&sup2;), Z )
+theta_d = theta + <b>k1</b>&middot;theta&sup3; + <b>k2</b>&middot;theta&#8309; + <b>k3</b>&middot;theta&#8311; + <b>k4</b>&middot;theta&#8313; + <b>k5</b>&middot;theta&#185;&#185;
+x', y'  = theta_d &middot; (X, Y) / sqrt(X&sup2; + Y&sup2;)
+<span class="c"># Brown tangential distortion, then the intrinsic matrix</span>
+r2      = theta_d&sup2;
+x''     = x' + 2&middot;<b>p1</b>&middot;x'&middot;y' + <b>p2</b>&middot;(r2 + 2&middot;x'&sup2;)
+y''     = y' + <b>p1</b>&middot;(r2 + 2&middot;y'&sup2;) + 2&middot;<b>p2</b>&middot;x'&middot;y'
+u, v    = <b>fx</b>&middot;x'' + <b>cx</b> ,  <b>fy</b>&middot;y'' + <b>cy</b></pre>
+    <p>No normalisation, no fudge factor. The proof it is the real model, not just a good fit: it <b>out-scores a lookup table built by measuring the lens curve directly</b> against DJI's export &mdash; a model carrying form-error cannot beat a direct measurement.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">04</span>Stitching a frame</h2>
+    <ul>
+      <li><b>Project</b> every output pixel's world direction into each lens (extrinsic quaternion + f-theta) to build a remap.</li>
+      <li><b>Level</b> to the gravity vector &mdash; horizon flat; heading is a free choice for a 360.</li>
+      <li><b>Field of view</b> = <code>180&deg; + seam_overlap_ratio&middot;360&deg;</code> = 193.7&deg;, derived from DJI's shipped <code>seam_overlap_ratio</code> (0.038), not tuned.</li>
+      <li><b>Exposure</b> &mdash; the sensors meter and vignette differently. A single gain can't fix a difference that varies across the seam, and a per-pixel field fights parallax; <b>multi-band blending</b> fades it invisibly instead.</li>
+    </ul>
+    <p class="mut">The result is below: our stitch (from the file) against DJI Studio's own export of the same frame, aligned and tone-matched so what you see is geometry, not DJI's grading. Drag the divider; try a few frames.</p>
+    <figure class="ab">
+      <div class="fbtns" id="frameBtns"></div>
+      <div class="stage" id="abstage" style="--split:50%">
+        <img id="abBot"><img id="abTop" class="top">
+        <div class="tagL">OURS</div><div class="tagR">DJI</div>
+        <div class="divider" id="abdiv"></div>
+      </div>
+      <figcaption id="abcap">left: our stitch &middot; right: DJI Studio</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2><span class="n">05</span>What DJI does that this deliberately doesn't</h2>
+    <p>Matching DJI's exported pixels is <em>not</em> the goal &mdash; several of its steps are creative choices for the edit, not a faithful conversion:</p>
+    <ul>
+      <li><b>Colour grading.</b> DJI bakes a look on export. Shot in D-Log-M, that grade belongs in the edit, so the log curve is preserved untouched here.</li>
+      <li><b>Electronic stabilisation.</b> DJI smooths the camera path (forward-view EIS). Locking the world orientation already stabilises a 360; heavier smoothing re-frames the shot and is the editor's call.</li>
+      <li><b>Rolling-shutter deroll.</b> DJI warps each frame per-row from the IMU. The data is in the file and it's implemented &mdash; but on handheld footage the readout motion is ~1&ndash;2&deg; and the skew sub-pixel, so it's off by default. It matters for fast whip-pans.</li>
+    </ul>
+    <p class="mut">There is also a fixed ~1.5&deg; offset between the accelerometer's &ldquo;down&rdquo; and DJI's world down &mdash; a camera&harr;IMU mount rotation DJI defaults internally and does not store. A gravity-levelled horizon is objectively level, so it isn't chased.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">06</span>Status</h2>
+    <p>Fully decoded: container, both <code>CAM meta</code> tracks, the f-theta lens model, audio, thumbnail. Undecoded but unnecessary: the two <code>dbgi</code> debug tracks. The conversion needs none of it. To go from stills to video: level every frame and lock heading for a stable sphere, encode HEVC 10-bit with equirectangular spherical metadata, and mux the stereo audio.</p>
+    <div class="foot mono">Read from the binary and the file &mdash; no vendor SDK. Camera: DJI Osmo 360 &middot; sensor OmniVision OV68A40.</div>
+  </section>
+
+</div></main>
+
+<script>
+const POC="__POC__";
+const AB=__AB_DATA__;
+
+/* ---------- 360 sphere viewer ---------- */
+const cv=document.getElementById('gl'), gl=cv.getContext('webgl');
+let yaw=2.1,pitch=0,fov=1.35,tex=null,prog;
+if(gl){
+  const VS='attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
+  const FS='precision highp float;uniform sampler2D t;uniform vec2 res;uniform float yaw,pitch,fov;'+
+   'const float PI=3.14159265359;void main(){vec2 uv=(gl_FragCoord.xy-0.5*res)/res.y;'+
+   'vec3 d=normalize(vec3(uv.x,uv.y,-1.0/tan(fov*0.5)));float cp=cos(pitch),sp=sin(pitch);'+
+   'd=vec3(d.x,cp*d.y-sp*d.z,sp*d.y+cp*d.z);float cy=cos(yaw),sy=sin(yaw);'+
+   'd=vec3(cy*d.x+sy*d.z,d.y,-sy*d.x+cy*d.z);float lon=atan(d.x,-d.z),lat=asin(clamp(d.y,-1.,1.));'+
+   'gl_FragColor=texture2D(t,vec2(fract(lon/(2.*PI)+0.5),clamp(0.5-lat/PI,0.,1.)));}';
+  const sh=(t,s)=>{const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);return o;};
+  prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS));
+  gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS));gl.linkProgram(prog);gl.useProgram(prog);
+  const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  const l=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);
+  const im=new Image();im.onload=()=>{tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);resize();draw();};
+  im.src=POC;
+}
+const U=n=>gl.getUniformLocation(prog,n);
+function resize(){const d=Math.min(window.devicePixelRatio||1,2);cv.width=cv.clientWidth*d;cv.height=cv.clientHeight*d;gl.viewport(0,0,cv.width,cv.height);}
+function draw(){if(!tex)return;gl.uniform2f(U('res'),cv.width,cv.height);gl.uniform1f(U('yaw'),yaw);
+  gl.uniform1f(U('pitch'),pitch);gl.uniform1f(U('fov'),fov);gl.drawArrays(gl.TRIANGLES,0,3);}
+let dg=false,lx=0,ly=0;
+cv.addEventListener('pointerdown',e=>{dg=true;lx=e.clientX;ly=e.clientY;cv.classList.add('drag');cv.setPointerCapture(e.pointerId);});
+cv.addEventListener('pointerup',()=>{dg=false;cv.classList.remove('drag');});
+cv.addEventListener('pointermove',e=>{if(!dg)return;yaw-=(e.clientX-lx)*.005*(fov/1.35);
+  pitch+=(e.clientY-ly)*.005*(fov/1.35);pitch=Math.max(-1.5,Math.min(1.5,pitch));lx=e.clientX;ly=e.clientY;draw();});
+cv.addEventListener('wheel',e=>{e.preventDefault();fov=Math.max(.4,Math.min(2.6,fov*(1+e.deltaY*.0013)));draw();},{passive:false});
+window.addEventListener('resize',()=>{if(gl){resize();draw();}});
+
+/* ---------- A/B slider ---------- */
+const abTop=document.getElementById('abTop'),abBot=document.getElementById('abBot'),
+      abstage=document.getElementById('abstage'),abdiv=document.getElementById('abdiv'),
+      fb=document.getElementById('frameBtns'),abcap=document.getElementById('abcap');
+let cur=0;
+function showAB(){const f=AB[cur];abTop.src=f.ours;abBot.src=f.dji;
+  abcap.textContent='frame '+f.n+'  ·  left: our stitch  ·  right: DJI Studio';
+  [...fb.children].forEach((b,i)=>b.classList.toggle('on',i===cur));}
+AB.forEach((f,i)=>{const b=document.createElement('button');b.textContent='frame '+f.n;
+  b.onclick=()=>{cur=i;showAB();};fb.appendChild(b);});
+let abdrag=false;
+function moveAB(x){const r=abstage.getBoundingClientRect();
+  abstage.style.setProperty('--split',Math.max(0,Math.min(1,(x-r.left)/r.width))*100+'%');}
+abdiv.addEventListener('pointerdown',e=>{abdrag=true;abdiv.setPointerCapture(e.pointerId);});
+abdiv.addEventListener('pointermove',e=>{if(abdrag)moveAB(e.clientX);});
+abdiv.addEventListener('pointerup',()=>abdrag=false);
+abstage.addEventListener('click',e=>{if(e.target!==abdiv)moveAB(e.clientX);});
+showAB();
+</script>
