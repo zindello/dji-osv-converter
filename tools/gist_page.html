@@ -209,7 +209,7 @@ const AB=__AB_DATA__;
 
 /* ---------- 360 sphere viewer ---------- */
 const cv=document.getElementById('gl'), gl=cv.getContext('webgl');
-let yaw=2.1,pitch=0,fov=1.35,tex=null,prog;
+let yaw=0.0,pitch=0,fov=1.35,tex=null,prog;
 if(gl){
   const VS='attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
   const FS='precision highp float;uniform sampler2D t;uniform vec2 res;uniform float yaw,pitch,fov;'+
@@ -236,11 +236,18 @@ const U=n=>gl.getUniformLocation(prog,n);
 function resize(){const d=Math.min(window.devicePixelRatio||1,2);cv.width=cv.clientWidth*d;cv.height=cv.clientHeight*d;gl.viewport(0,0,cv.width,cv.height);}
 function draw(){if(!tex)return;gl.uniform2f(U('res'),cv.width,cv.height);gl.uniform1f(U('yaw'),yaw);
   gl.uniform1f(U('pitch'),pitch);gl.uniform1f(U('fov'),fov);gl.drawArrays(gl.TRIANGLES,0,3);}
-let dg=false,lx=0,ly=0;
+let dg=false,lx=0,ly=0,rawPitch=0;
+const DEAD=0.06;  // ~3.4deg horizon dead-zone: pan stays level until you deliberately look up/down
 cv.addEventListener('pointerdown',e=>{dg=true;lx=e.clientX;ly=e.clientY;cv.classList.add('drag');cv.setPointerCapture(e.pointerId);});
 cv.addEventListener('pointerup',()=>{dg=false;cv.classList.remove('drag');});
-cv.addEventListener('pointermove',e=>{if(!dg)return;yaw-=(e.clientX-lx)*.005*(fov/1.35);
-  pitch+=(e.clientY-ly)*.005*(fov/1.35);pitch=Math.max(-1.5,Math.min(1.5,pitch));lx=e.clientX;ly=e.clientY;draw();});
+cv.addEventListener('pointermove',e=>{if(!dg)return;
+  // grab-and-drag: the point under the cursor follows it (drag right -> pan left)
+  yaw+=(e.clientX-lx)*.005*(fov/1.35);
+  rawPitch-=(e.clientY-ly)*.005*(fov/1.35);
+  rawPitch=Math.max(-1.5,Math.min(1.5,rawPitch));
+  // dead-zone: within DEAD of level the view holds flat, then eases in continuously
+  pitch=Math.sign(rawPitch)*Math.max(0,Math.abs(rawPitch)-DEAD);
+  lx=e.clientX;ly=e.clientY;draw();});
 cv.addEventListener('wheel',e=>{e.preventDefault();fov=Math.max(.4,Math.min(2.6,fov*(1+e.deltaY*.0013)));draw();},{passive:false});
 window.addEventListener('resize',()=>{if(gl){resize();draw();}});
 
