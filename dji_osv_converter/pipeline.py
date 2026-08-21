@@ -30,33 +30,38 @@ from .stitcher import blend, flow_blend, match_exposure, seam_weights, warp
 
 logger = logging.getLogger(__name__)
 
-# Per-camera extrinsic corrections (yaw, pitch, roll in degrees).
+# Per-camera extrinsic and intrinsic corrections. Both are now IDENTITY: every
+# geometric term comes from the OSV file (see notes below). They remain as
+# hooks so a caller can experiment, but the shipping pipeline adds nothing.
 #
-# Found by aligning EACH camera's warped hemisphere to DJI's export
-# independently, rather than by maximising inter-camera seam agreement. That
-# distinction matters: the seam metric only sees the ~8% overlap band, so it
-# cannot observe a rotation that moves a whole hemisphere, and it wrongly
-# suggested camera 0 needed no correction at all. Aligning per camera against
-# ground truth lifted camera 0 from 0.759 to 0.905 NCC and camera 1 from
-# 0.930 to 0.943.
-CAM_TWEAK = {
-    0: (-1.79, -0.65, 1.75),
-    1: (-1.28, -0.70, 1.09),
-}
-
-# Small residual intrinsic corrections per camera: (dcx, dcy, focal_scale),
-# refined jointly with the poses against DJI's export. Principal point moves by
-# only a few pixels and focal scale by well under one percent, so the values
-# read out of the file are essentially right - these are polish, not repairs.
-# Lifted camera 0 from 0.905 to 0.935 NCC and camera 1 from 0.943 to 0.955.
-# With the correct f-theta lens model these collapse to nothing: focal scale
-# 0.9995/0.9985 (i.e. 1.0) and principal point within a few pixels. They are
-# kept only to absorb measurement noise; the file's intrinsics are correct.
-CAM_INTRINSIC_FIX = {
-    0: (-0.9, -1.9, 0.9995),
-    1: (-3.6, 4.5, 0.9985),
-}
+# History worth keeping, because it explains why they are gone:
+#   - Once the correct f-theta lens model was decoded, the fitted focal scale
+#     collapsed to 0.9995/0.9985 and the principal-point shifts to a few pixels
+#     - i.e. the file's intrinsics were right all along.
+#   - The ~1.8 deg / ~1.3 deg per-camera rotation turned out to be almost
+#     entirely a SHARED rotation (near-identical on both cameras), so it was a
+#     levelling offset, not a per-lens error. Its two parts:
+#       * ~1 deg about gravity - an arbitrary heading. Gravity fixes only two
+#         of three DOF; which way is "front" is a free choice for a 360.
+#       * ~1.5 deg of tilt - a CONSTANT offset (measured 1.5-1.7 deg on every
+#         frame) between the accelerometer's gravity and DJI's world "down".
+#         DJI applies a camera<->IMU mount rotation (camImuExtriQ / rImu2Slave
+#         in its binary) plus a forward-view EIS orientation. That rotation is
+#         flagged mIsCamImuExtriQRealValue and, for this unit, is NOT stored in
+#         the OSV nor in DJI's shipped calibration - so DJI uses an internal
+#         default. It is not recoverable from the file and, being a stylistic
+#         forward-view offset rather than ground truth, is not chased: a
+#         gravity-levelled horizon is objectively level.
+CAM_TWEAK = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 0.0)}
+CAM_INTRINSIC_FIX = {0: (0.0, 0.0, 1.0), 1: (0.0, 0.0, 1.0)}
 CAM1_TWEAK = CAM_TWEAK[1]   # retained for older callers
+
+# Extrinsic source: the per-camera unit quaternion (OSV field .21) rather than
+# yaw/pitch/roll. Both are in the file and describe the same rotation, but the
+# lenses sit at pitch ~= 90 deg where yaw/pitch/roll is gimbal-locked and loses
+# precision; the quaternion does not. Stored component order is w,x,y,z.
+EXTRINSIC_SOURCE = "quat"
+EXTRINSIC_ORDER = "wxyz"
 
 # Lens rim is optically worst and most parallax-sensitive. Cropping below the
 # nominal ~210 deg FOV measurably improves seam agreement (0.53 -> 0.64).
@@ -178,7 +183,8 @@ class Stitcher360:
         if hit is not None:
             return hit
 
-        common = dict(out_w=self.width, out_h=self.height, source="ypr",
+        common = dict(out_w=self.width, out_h=self.height,
+                      source=EXTRINSIC_SOURCE, order=EXTRINSIC_ORDER,
                       max_fov_deg=self.fov_deg, feather_deg=4.0,
                       focal_scale=self.focal_scale)
 
