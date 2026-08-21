@@ -27,6 +27,9 @@
   .stage img{position:absolute;top:0;left:0;width:100%;height:100%;display:block;object-fit:cover}
   /* top layer = OURS, shown on the LEFT of the divider */
   .stage .top{clip-path:inset(0 calc(100% - var(--split)) 0 0);}
+  .stage canvas{position:absolute;top:0;left:0;width:100%;height:100%;display:none;
+    cursor:grab;touch-action:none}
+  .stage canvas.drag{cursor:grabbing}
   .divider{position:absolute;top:0;bottom:0;left:var(--split);width:2px;background:var(--accent);
     box-shadow:0 0 0 1px #0008;cursor:ew-resize;z-index:5}
   .divider::after{content:"";position:absolute;top:50%;left:50%;width:34px;height:34px;
@@ -57,18 +60,21 @@
       <button data-mode="ours">Ours</button>
       <button data-mode="dji">DJI</button>
       <button data-mode="diff">Diff</button>
-      <button data-mode="flip">Flip (hold F)</button>
+      <button data-mode="flip">Flip (F)</button>
+      <button data-mode="sphere">360&deg;</button>
     </div>
   </div>
   <div class="stage" id="stage" style="--split:50%">
     <img id="imgBot" alt="">
     <img id="imgTop" class="top" alt="">
+    <canvas id="gl"></canvas>
     <div class="tag l" id="tagL">OURS</div>
     <div class="tag r" id="tagR">DJI</div>
+    <div class="tag r" id="tag360" style="display:none;right:auto;left:50%;transform:translateX(-50%);color:var(--ink)">drag to look &middot; scroll to zoom &middot; F to swap</div>
     <div class="divider" id="divider"></div>
   </div>
   <div class="metrics" id="metrics"></div>
-  <div class="legend">Diff view: brighter = larger luma difference after alignment + histogram tone-match (i.e. structural, not shading).</div>
+  <div class="legend">Slider/Flip/Diff are flat A/B. <b>360&deg;</b> drops the current frame onto a sphere &mdash; drag to look, scroll to zoom, press <b>F</b> or the Ours/DJI buttons to swap which stitch you are inside. Diff brightness = luma difference after alignment + histogram tone-match (structural, not shading).</div>
 </div>
 
 <script>
@@ -77,12 +83,33 @@ const DATA = window.FRAME_DATA || null;
 const stage=document.getElementById('stage'),
       imgTop=document.getElementById('imgTop'), imgBot=document.getElementById('imgBot'),
       divider=document.getElementById('divider'), tagL=document.getElementById('tagL'),
-      tagR=document.getElementById('tagR'), framesEl=document.getElementById('frames'),
-      metricsEl=document.getElementById('metrics');
-let frames=[], cur=0, mode='split', flipState=false;
+      tagR=document.getElementById('tagR'), tag360=document.getElementById('tag360'),
+      framesEl=document.getElementById('frames'), metricsEl=document.getElementById('metrics'),
+      glcanvas=document.getElementById('gl');
+let frames=[], cur=0, mode='split', flipState=false, sphereSrc='ours';
+
+function metricsHTML(f){
+  const m=f.metrics||{};
+  return (m.ssim!==undefined) ?
+    `frame <b>${f.n}</b> &middot; SSIM <b>${m.ssim.toFixed(3)}</b> &middot; edge&#8209;NCC <b>${m.edge_ncc.toFixed(3)}</b>`+
+    ` &middot; NCC <b>${m.ncc.toFixed(3)}</b> &middot; PSNR <b>${m.psnr_db.toFixed(1)} dB</b>`+
+    ` &middot; within&nbsp;8 <b>${m.pct_within_8.toFixed(0)}%</b> &middot; within&nbsp;16 <b>${m.pct_within_16.toFixed(0)}%</b>` : `frame <b>${f.n}</b>`;
+}
 
 function setImages(){
   const f=frames[cur];
+  const sphere = (mode==='sphere');
+  // toggle flat vs sphere surfaces
+  imgTop.style.display = imgBot.style.display = sphere?'none':'block';
+  glcanvas.style.display = sphere?'block':'none';
+  tag360.style.display = sphere?'block':'none';
+  tagL.style.display = tagR.style.display = sphere?'none':'block';
+  if(sphere){
+    tagL.style.display='block'; tagL.textContent=(sphereSrc==='ours'?'OURS':'DJI')+' 360';
+    setSphere(f[sphereSrc]);
+    metricsEl.innerHTML = metricsHTML(f) + ' &middot; <span style="color:var(--mut)">showing '+(sphereSrc==='ours'?'ours':'DJI')+'</span>';
+    return;
+  }
   if(mode==='diff'){ imgBot.src=f.diff; imgTop.src=f.diff; tagL.textContent='DIFF'; tagR.textContent='DIFF'; }
   else if(mode==='ours'){ imgBot.src=f.ours; imgTop.src=f.ours; tagL.textContent='OURS'; tagR.textContent='OURS'; }
   else if(mode==='dji'){ imgBot.src=f.dji; imgTop.src=f.dji; tagL.textContent='DJI'; tagR.textContent='DJI'; }
@@ -91,12 +118,8 @@ function setImages(){
   else { imgBot.src=f.dji; imgTop.src=f.ours; tagL.textContent='OURS'; tagR.textContent='DJI'; }
   divider.style.display = (mode==='split')?'block':'none';
   imgTop.classList.toggle('top', mode==='split');
-  if(mode!=='split') imgTop.style.clipPath='none'; else imgTop.style.clipPath='';
-  const m=f.metrics||{};
-  metricsEl.innerHTML = m.ssim!==undefined ?
-    `frame <b>${f.n}</b> &middot; SSIM <b>${m.ssim.toFixed(3)}</b> &middot; edge&#8209;NCC <b>${m.edge_ncc.toFixed(3)}</b>`+
-    ` &middot; NCC <b>${m.ncc.toFixed(3)}</b> &middot; PSNR <b>${m.psnr_db.toFixed(1)} dB</b>`+
-    ` &middot; within&nbsp;8 <b>${m.pct_within_8.toFixed(0)}%</b> &middot; within&nbsp;16 <b>${m.pct_within_16.toFixed(0)}%</b>` : `frame <b>${f.n}</b>`;
+  imgTop.style.clipPath = (mode==='split')?'':'none';
+  metricsEl.innerHTML = metricsHTML(f);
 }
 function buildFrames(){
   framesEl.innerHTML='';
@@ -104,11 +127,14 @@ function buildFrames(){
     b.className=i===cur?'active':''; b.onclick=()=>{cur=i;buildFrames();setImages();}; framesEl.appendChild(b);});
 }
 document.querySelectorAll('#modes button').forEach(b=>b.onclick=()=>{
-  mode=b.dataset.mode;
+  const nm=b.dataset.mode;
+  // In sphere mode, Ours/DJI pick which panorama to show on the sphere.
+  if(mode==='sphere' && (nm==='ours'||nm==='dji')){ sphereSrc=nm; setImages(); return; }
+  mode=nm;
   document.querySelectorAll('#modes button').forEach(x=>x.classList.toggle('active',x===b));
   setImages();
 });
-// slider drag
+// flat slider drag
 let dragging=false;
 function moveTo(clientX){const r=stage.getBoundingClientRect();
   let x=Math.max(0,Math.min(1,(clientX-r.left)/r.width)); stage.style.setProperty('--split',(x*100)+'%');}
@@ -116,14 +142,72 @@ divider.addEventListener('pointerdown',e=>{dragging=true;divider.setPointerCaptu
 divider.addEventListener('pointermove',e=>{if(dragging)moveTo(e.clientX);});
 divider.addEventListener('pointerup',()=>dragging=false);
 stage.addEventListener('click',e=>{if(mode==='split'&&e.target!==divider)moveTo(e.clientX);});
-// keyboard: F flip, arrows frames
+// keyboard
 addEventListener('keydown',e=>{
-  if(e.key==='f'||e.key==='F'){ if(mode!=='flip'){mode='flip';} flipState=!flipState;
-    document.querySelectorAll('#modes button').forEach(x=>x.classList.toggle('active',x.dataset.mode==='flip')); setImages(); }
+  if(e.key==='f'||e.key==='F'){
+    if(mode==='sphere'){ sphereSrc=(sphereSrc==='ours')?'dji':'ours'; setImages(); }
+    else { if(mode!=='flip'){mode='flip';} flipState=!flipState;
+      document.querySelectorAll('#modes button').forEach(x=>x.classList.toggle('active',x.dataset.mode==='flip')); setImages(); }
+  }
   if(e.key==='ArrowRight'){cur=(cur+1)%frames.length;buildFrames();setImages();}
   if(e.key==='ArrowLeft'){cur=(cur-1+frames.length)%frames.length;buildFrames();setImages();}
 });
-addEventListener('keyup',e=>{ if((e.key==='f'||e.key==='F')&&mode==='flip'){} });
+
+/* ---- WebGL equirectangular sphere ---- */
+const gl=glcanvas.getContext('webgl');
+let glOK=!!gl, prog, texCache={}, yaw=2.2, pitch=0, fov=1.4, curTexKey=null;
+if(glOK){
+  const VS='attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
+  const FS='precision highp float;uniform sampler2D t;uniform vec2 res;uniform float yaw,pitch,fov;'+
+    'const float PI=3.14159265359;void main(){'+
+    'vec2 uv=(gl_FragCoord.xy-0.5*res)/res.y;'+
+    'vec3 d=normalize(vec3(uv.x,uv.y,-1.0/tan(fov*0.5)));'+
+    'float cp=cos(pitch),sp=sin(pitch);d=vec3(d.x,cp*d.y-sp*d.z,sp*d.y+cp*d.z);'+
+    'float cy=cos(yaw),sy=sin(yaw);d=vec3(cy*d.x+sy*d.z,d.y,-sy*d.x+cy*d.z);'+
+    'float lon=atan(d.x,-d.z),lat=asin(clamp(d.y,-1.,1.));'+
+    'gl_FragColor=texture2D(t,vec2(fract(lon/(2.*PI)+0.5),clamp(0.5-lat/PI,0.,1.)));}';
+  function sh(t,src){const o=gl.createShader(t);gl.shaderSource(o,src);gl.compileShader(o);return o;}
+  prog=gl.createProgram();gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS));
+  gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS));gl.linkProgram(prog);gl.useProgram(prog);
+  const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+}
+const U=n=>gl.getUniformLocation(prog,n);
+function resizeGL(){const dpr=Math.min(window.devicePixelRatio||1,2);
+  glcanvas.width=glcanvas.clientWidth*dpr;glcanvas.height=glcanvas.clientHeight*dpr;
+  if(glOK)gl.viewport(0,0,glcanvas.width,glcanvas.height);}
+function drawGL(){ if(!glOK||!curTexKey||!texCache[curTexKey])return;
+  gl.bindTexture(gl.TEXTURE_2D,texCache[curTexKey]);
+  gl.uniform2f(U('res'),glcanvas.width,glcanvas.height);
+  gl.uniform1f(U('yaw'),yaw);gl.uniform1f(U('pitch'),pitch);gl.uniform1f(U('fov'),fov);
+  gl.drawArrays(gl.TRIANGLES,0,3);}
+function setSphere(dataURI){ if(!glOK){metricsEl.textContent='WebGL unavailable';return;}
+  const key=frames[cur].n+':'+sphereSrc;
+  curTexKey=key; resizeGL();
+  if(texCache[key]){ drawGL(); return; }
+  const im=new Image();
+  im.onload=()=>{const tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    texCache[key]=tex; if(curTexKey===key) drawGL();};
+  im.src=dataURI;
+}
+// sphere drag / zoom
+let sdrag=false,slx=0,sly=0;
+glcanvas.addEventListener('pointerdown',e=>{sdrag=true;slx=e.clientX;sly=e.clientY;
+  glcanvas.classList.add('drag');glcanvas.setPointerCapture(e.pointerId);});
+glcanvas.addEventListener('pointerup',()=>{sdrag=false;glcanvas.classList.remove('drag');});
+glcanvas.addEventListener('pointermove',e=>{if(!sdrag)return;
+  yaw-=(e.clientX-slx)*0.005*(fov/1.4); pitch+=(e.clientY-sly)*0.005*(fov/1.4);
+  pitch=Math.max(-1.55,Math.min(1.55,pitch)); slx=e.clientX;sly=e.clientY; drawGL();});
+glcanvas.addEventListener('wheel',e=>{e.preventDefault();
+  fov=Math.max(0.35,Math.min(2.6,fov*(1+e.deltaY*0.0013))); drawGL();},{passive:false});
+window.addEventListener('resize',()=>{ if(mode==='sphere'){resizeGL();drawGL();} });
 
 function init(d){ frames=d; if(!frames.length){metricsEl.textContent='no frames';return;}
   buildFrames(); setImages(); }
