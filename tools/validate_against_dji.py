@@ -120,13 +120,40 @@ def apply_rotation(img: np.ndarray, R: np.ndarray) -> np.ndarray:
 
 
 def match_tone(src: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """Per-channel gain/offset so grading differences don't count as error."""
-    out = np.empty_like(src, dtype=np.float32)
+    """Monotonic per-channel histogram match, src -> ref.
+
+    DJI grades its export with a nonlinear tone curve (MltTonalEnhance /
+    filter_normalize, seen in the live stack trace). A gain+offset cannot
+    absorb that, so residual brightness masquerades as geometric error. A
+    monotonic histogram match applies whatever 1-D curve best aligns our tones
+    to DJI's - it cannot move a pixel spatially, so geometry is untouched and
+    what remains after it is genuinely structural.
+    """
+    out = np.empty_like(src)
     for c in range(3):
-        a, b = src[..., c].astype(np.float32), ref[..., c].astype(np.float32)
-        gain = b.std() / (a.std() + 1e-6)
-        out[..., c] = (a - a.mean()) * gain + b.mean()
-    return np.clip(out, 0, 255).astype(np.uint8)
+        a = src[..., c].ravel()
+        b = ref[..., c].ravel()
+        a_vals, a_idx, a_cnt = np.unique(a, return_inverse=True, return_counts=True)
+        b_vals, b_cnt = np.unique(b, return_counts=True)
+        a_cdf = np.cumsum(a_cnt).astype(np.float64) / a.size
+        b_cdf = np.cumsum(b_cnt).astype(np.float64) / b.size
+        lut = np.interp(a_cdf, b_cdf, b_vals)
+        out[..., c] = lut[a_idx].reshape(src[..., c].shape).astype(np.uint8)
+    return out
+
+
+def _ssim(a: np.ndarray, b: np.ndarray) -> float:
+    """Global SSIM on luma, Gaussian-windowed (Wang et al.)."""
+    a = a.astype(np.float64); b = b.astype(np.float64)
+    C1, C2 = (0.01 * 255) ** 2, (0.03 * 255) ** 2
+    win = (11, 11); sig = 1.5
+    mu_a = cv2.GaussianBlur(a, win, sig); mu_b = cv2.GaussianBlur(b, win, sig)
+    mu_a2, mu_b2, mu_ab = mu_a * mu_a, mu_b * mu_b, mu_a * mu_b
+    sa = cv2.GaussianBlur(a * a, win, sig) - mu_a2
+    sb = cv2.GaussianBlur(b * b, win, sig) - mu_b2
+    sab = cv2.GaussianBlur(a * b, win, sig) - mu_ab
+    ssim = ((2 * mu_ab + C1) * (2 * sab + C2)) / ((mu_a2 + mu_b2 + C1) * (sa + sb + C2))
+    return float(ssim.mean())
 
 
 def compare(ours: np.ndarray, ref: np.ndarray) -> dict:
@@ -144,6 +171,7 @@ def compare(ours: np.ndarray, ref: np.ndarray) -> dict:
 
     return {
         "ncc": float((_norm(a) * _norm(b)).mean()),
+        "ssim": _ssim(a, b),
         "edge_ncc": edge_ncc,
         "psnr_db": psnr,
         "mean_abs_err": float(diff.mean()),
@@ -183,7 +211,7 @@ def main() -> int:
         st._cache.clear()
     print(f"lens model: {st.lens_model}")
 
-    print(f"\n{'frame':>6} {'NCC':>7} {'edgeNCC':>8} {'PSNR':>7} {'MAE':>6} "
+    print(f"\n{'frame':>6} {'NCC':>7} {'SSIM':>7} {'edgeNCC':>8} {'PSNR':>7} {'MAE':>6} "
           f"{'<=8':>7} {'<=16':>7} {'<=32':>7}")
     print("-" * 62)
     rows = []
@@ -198,7 +226,7 @@ def main() -> int:
         aligned = match_tone(apply_rotation(ours, R), ref)
         m = compare(aligned, ref)
         rows.append(m)
-        print(f"{n:>6} {m['ncc']:>7.4f} {m['edge_ncc']:>8.4f} {m['psnr_db']:>7.2f} "
+        print(f"{n:>6} {m['ncc']:>7.4f} {m['ssim']:>7.4f} {m['edge_ncc']:>8.4f} {m['psnr_db']:>7.2f} "
               f"{m['mean_abs_err']:>6.2f} {m['pct_within_8']:>6.1f}% "
               f"{m['pct_within_16']:>6.1f}% {m['pct_within_32']:>6.1f}%")
 
@@ -215,7 +243,7 @@ def main() -> int:
 
     print("-" * 62)
     avg = {k: float(np.mean([r[k] for r in rows])) for k in rows[0]}
-    print(f"{'mean':>6} {avg['ncc']:>7.4f} {avg['edge_ncc']:>8.4f} {avg['psnr_db']:>7.2f} "
+    print(f"{'mean':>6} {avg['ncc']:>7.4f} {avg['ssim']:>7.4f} {avg['edge_ncc']:>8.4f} {avg['psnr_db']:>7.2f} "
           f"{avg['mean_abs_err']:>6.2f} {avg['pct_within_8']:>6.1f}% "
           f"{avg['pct_within_16']:>6.1f}% {avg['pct_within_32']:>6.1f}%")
     print(f"\nwrote comparisons to {outdir}/")

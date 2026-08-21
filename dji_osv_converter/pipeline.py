@@ -63,9 +63,36 @@ CAM1_TWEAK = CAM_TWEAK[1]   # retained for older callers
 EXTRINSIC_SOURCE = "quat"
 EXTRINSIC_ORDER = "wxyz"
 
-# Lens rim is optically worst and most parallax-sensitive. Cropping below the
-# nominal ~210 deg FOV measurably improves seam agreement (0.53 -> 0.64).
-DEFAULT_FOV_DEG = 196.0
+# Field of view actually used per lens. NOT hand-tuned: it is the minimum FOV
+# that supplies DJI's own blend band. DJI ships seam_overlap_ratio = 0.038 in
+# Stitcher-Mac.bundle; that band spans 0.038 * 360 deg = 13.7 deg of the
+# equirect, so each lens must reach 13.7/2 deg past 180, giving
+# 180 + 0.038*360 = 193.7 deg. Read from the bundle at runtime; this literal is
+# only the fallback if the bundle is absent. (The physical lens is ~210 deg,
+# but its rim is the worst optically and is not needed once the blend band is
+# covered - and DJI's own image-circle points, calib fields .22/.23, put the
+# clean image at ~184-189 deg, bracketing this value.)
+SEAM_OVERLAP_RATIO_FALLBACK = 0.038
+DEFAULT_FOV_DEG = 180.0 + SEAM_OVERLAP_RATIO_FALLBACK * 360.0  # 193.68
+
+
+def _read_seam_overlap_ratio() -> float:
+    """DJI's blend-band width as a fraction of the 360 deg equirect.
+
+    Shipped in the DualStitcher bundle. Falls back to the observed 0.038 if the
+    bundle is not present (e.g. DJI Studio not installed).
+    """
+    import json
+    from .calibration import DEFAULT_BUNDLE
+    p = DEFAULT_BUNDLE / "case_00" / "seam_overlap_ratio.json"
+    try:
+        return float(json.loads(p.read_text())["seam_overlap_ratio"])
+    except Exception:
+        return SEAM_OVERLAP_RATIO_FALLBACK
+
+
+def _fov_from_overlap(ratio: float) -> float:
+    return 180.0 + ratio * 360.0
 
 # Lens radial model. The k1..k4 coefficients in the file are NOT usable as a
 # Brown series in theta: they produce a non-monotonic curve that puts the image
@@ -154,20 +181,24 @@ class Stitcher360:
     width: int = 7680
     height: int = 3840
     fov_deg: float = DEFAULT_FOV_DEG
+    seam_overlap_ratio: float = SEAM_OVERLAP_RATIO_FALLBACK
     lens_model: object = LENS_MODEL
     focal_scale: float = FOCAL_SCALE
     _cache: dict = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_file(cls, path: str | Path, width: int = 7680, height: int = 3840,
-                  fov_deg: float = DEFAULT_FOV_DEG,
+                  fov_deg: float | None = None,
                   max_frames: int | None = None) -> "Stitcher360":
         calibs = read_osv_calibration(path)
         meta = read_metadata(path, max_frames=max_frames)
         meta.gravity = smooth_gravity(meta.gravity)
-        logger.info("%s: %s, serial %s, %d orientation samples",
-                    Path(path).name, meta.model, meta.serial, len(meta.gravity))
-        return cls(calibs, meta, width, height, fov_deg)
+        # FOV and blend band both derive from DJI's shipped seam_overlap_ratio.
+        ratio = _read_seam_overlap_ratio()
+        fov = _fov_from_overlap(ratio) if fov_deg is None else fov_deg
+        logger.info("%s: %s, serial %s, %d samples; seam_overlap %.4f -> FOV %.2f deg",
+                    Path(path).name, meta.model, meta.serial, len(meta.gravity), ratio, fov)
+        return cls(calibs, meta, width, height, fov, ratio)
 
     def maps_for(self, frame: int) -> tuple[list[CameraMap], np.ndarray]:
         """Remap tables and seam weights for a frame's orientation.
@@ -185,7 +216,8 @@ class Stitcher360:
 
         common = dict(out_w=self.width, out_h=self.height,
                       source=EXTRINSIC_SOURCE, order=EXTRINSIC_ORDER,
-                      max_fov_deg=self.fov_deg, feather_deg=4.0,
+                      max_fov_deg=self.fov_deg,
+                      feather_deg=self.seam_overlap_ratio*360.0/3.0,
                       focal_scale=self.focal_scale)
 
         def prepared(i):
@@ -208,7 +240,7 @@ class Stitcher360:
                                   model=model, **common))
         m0, m1 = maps
         maps = [m0, m1]
-        weights = seam_weights(maps, band_px=0.038 * self.width)
+        weights = seam_weights(maps, band_px=self.seam_overlap_ratio * self.width)
         if len(self._cache) > 4:
             self._cache.clear()
         self._cache[key] = (maps, weights)
@@ -216,7 +248,7 @@ class Stitcher360:
 
     def stitch(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
                frame: int = 0, flow: bool = True,
-               exposure: bool = False) -> np.ndarray:
+               exposure: bool = True) -> np.ndarray:
         """Stitch one frame pair.
 
         `flow=True` morphs across the seam to absorb parallax; set False for

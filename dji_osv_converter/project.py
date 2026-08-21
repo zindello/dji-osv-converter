@@ -5,11 +5,16 @@ derived from the recording camera's own factory calibration, read out of the
 OSV file. Output resolution is ours to choose, so it also removes the fixed
 1920x3840 grid of the shipped tables.
 
-Lens model is the equidistant fisheye (as used by OpenCV's fisheye module):
+Lens model is DJI's f-theta, read from DUALFISHEYEVIDEOEIS::CameraModel::project
+in the DJI Studio binary (see radial_map):
 
-    theta   = angle between the ray and the optical axis
-    theta_d = theta * (1 + k1*t^2 + k2*t^4 + k3*t^6 + k4*t^8)
-    (u, v)  = (fx*theta_d*X/rxy + cx,  fy*theta_d*Y/rxy + cy)
+    theta   = atan2(sqrt(X^2+Y^2), Z)
+    theta_d = theta + k1*th^3 + k2*th^5 + k3*th^7 + k4*th^9 + k5*th^11
+    (x',y') = theta_d * (X,Y)/sqrt(X^2+Y^2)
+    (x'',y'')= x',y' with Brown tangential distortion (p1,p2)
+    (u, v)  = (fx*x'' + cx,  fy*y'' + cy)
+
+All coefficients come from the OSV calibration block; the equation is DJI's.
 """
 
 from __future__ import annotations
@@ -24,24 +29,6 @@ from .osv_calibration import CameraCalib
 from .orientation import directions, rot_matrix
 
 logger = logging.getLogger(__name__)
-
-# The OSV's own k1..k4 ARE the radial polynomial, but expressed in theta
-# normalised by THETA_NORM rather than in raw radians. Applied to raw theta the
-# curve is non-monotonic and lands the image rim ~770 px short.
-#
-# THETA_NORM was solved for against the curve recovered from DJI ground truth:
-# 1.2427 rad fits best (1.9 px RMS across both cameras). Note sqrt(pi/2) =
-# 1.2533 rad fits within measurement noise (1.97 px) and is the value you would
-# get if the encoder writes `t2 = theta*theta/(M_PI/2)`, so the exact intended
-# constant is probably that. We keep the measured value.
-#
-# FILE_GAIN converts fx to the polynomial's leading coefficient. Fitted
-# independently per camera it came out 1.01043 and 1.01055 - agreeing to four
-# decimals, which is why it is treated as one pipeline constant rather than a
-# per-lens correction.
-THETA_NORM = 1.2427
-FILE_GAIN = 1.0105
-
 
 def quat_matrix(q, order: str = "xyzw") -> np.ndarray:
     q = np.asarray(q, dtype=np.float64)
@@ -96,7 +83,7 @@ def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "ftheta",
         for i, ci in enumerate(c[1:], start=1):
             r = r + ci * theta ** (2 * i + 1)
         return r / max(cal.fx, 1e-9)
-    if model not in ("ftheta", "file"):
+    if model != "ftheta":
         raise ValueError(f"unknown lens model {model!r}")
     td = theta.copy()
     for i, ki in enumerate(cal.k):
@@ -180,4 +167,4 @@ def build_maps(cals: list[CameraCalib], out_w: int, out_h: int, **kw) -> list[Ca
 
 
 __all__ = ["build_map", "build_maps", "extrinsic_matrix", "quat_matrix",
-           "project_directions", "radial_map", "FILE_GAIN", "THETA_NORM"]
+           "project_directions", "radial_map"]

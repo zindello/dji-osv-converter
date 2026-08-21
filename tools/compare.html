@@ -1,0 +1,132 @@
+<title>OSV Stitch vs DJI</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --line:#2a313b; --ink:#e6e9ee; --mut:#93a0b0;
+    --accent:#4bd6b5; --accent2:#f2c14e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;
+    align-items:center;gap:18px;flex-wrap:wrap}
+  h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.01em}
+  .sub{color:var(--mut);font-size:12.5px}
+  .wrap{padding:18px 20px 60px;max-width:1500px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .frames{display:flex;gap:6px;flex-wrap:wrap}
+  .frames button{background:var(--panel);border:1px solid var(--line);color:var(--mut);
+    padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit;font-size:12.5px}
+  .frames button.active{border-color:var(--accent);color:var(--ink);background:#12332c}
+  .modes{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .modes button{background:var(--panel);border:0;border-left:1px solid var(--line);
+    color:var(--mut);padding:6px 12px;cursor:pointer;font:inherit;font-size:12.5px}
+  .modes button:first-child{border-left:0}
+  .modes button.active{background:#12332c;color:var(--ink)}
+  .stage{position:relative;width:100%;aspect-ratio:2/1;background:#000;
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;user-select:none}
+  .stage img{position:absolute;top:0;left:0;width:100%;height:100%;display:block;object-fit:cover}
+  /* top layer = OURS, shown on the LEFT of the divider */
+  .stage .top{clip-path:inset(0 calc(100% - var(--split)) 0 0);}
+  .divider{position:absolute;top:0;bottom:0;left:var(--split);width:2px;background:var(--accent);
+    box-shadow:0 0 0 1px #0008;cursor:ew-resize;z-index:5}
+  .divider::after{content:"";position:absolute;top:50%;left:50%;width:34px;height:34px;
+    transform:translate(-50%,-50%);border-radius:50%;background:var(--accent);
+    box-shadow:0 2px 10px #000a}
+  .divider::before{content:"◄ ►";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-size:11px;color:#05100d;z-index:1;letter-spacing:-1px}
+  .tag{position:absolute;top:10px;padding:3px 9px;border-radius:5px;font-size:11.5px;
+    font-weight:600;letter-spacing:.03em;z-index:4;background:#000a;backdrop-filter:blur(3px)}
+  .tag.l{left:10px;color:var(--accent)}
+  .tag.r{right:10px;color:var(--accent2)}
+  .metrics{display:flex;gap:14px;flex-wrap:wrap;color:var(--mut);font-size:12.5px;
+    padding:2px 2px 0}
+  .metrics b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .hint{color:var(--mut);font-size:12px}
+  .legend{color:var(--mut);font-size:12px}
+</style>
+<header>
+  <h1>OSV Stitch <span style="color:var(--mut)">vs</span> DJI Studio</h1>
+  <span class="sub">flat equirectangular A/B &middot; drag the divider &middot; both aligned &amp; tone-matched, so what remains is geometry</span>
+</header>
+<div class="wrap">
+  <div class="controls">
+    <div class="frames" id="frames"></div>
+    <div style="flex:1"></div>
+    <div class="modes" id="modes">
+      <button data-mode="split" class="active">Slider</button>
+      <button data-mode="ours">Ours</button>
+      <button data-mode="dji">DJI</button>
+      <button data-mode="diff">Diff</button>
+      <button data-mode="flip">Flip (hold F)</button>
+    </div>
+  </div>
+  <div class="stage" id="stage" style="--split:50%">
+    <img id="imgBot" alt="">
+    <img id="imgTop" class="top" alt="">
+    <div class="tag l" id="tagL">OURS</div>
+    <div class="tag r" id="tagR">DJI</div>
+    <div class="divider" id="divider"></div>
+  </div>
+  <div class="metrics" id="metrics"></div>
+  <div class="legend">Diff view: brighter = larger luma difference after alignment + histogram tone-match (i.e. structural, not shading).</div>
+</div>
+
+<script>
+// FRAME_DATA is injected by the build step; falls back to a manifest fetch.
+const DATA = window.FRAME_DATA || null;
+const stage=document.getElementById('stage'),
+      imgTop=document.getElementById('imgTop'), imgBot=document.getElementById('imgBot'),
+      divider=document.getElementById('divider'), tagL=document.getElementById('tagL'),
+      tagR=document.getElementById('tagR'), framesEl=document.getElementById('frames'),
+      metricsEl=document.getElementById('metrics');
+let frames=[], cur=0, mode='split', flipState=false;
+
+function setImages(){
+  const f=frames[cur];
+  if(mode==='diff'){ imgBot.src=f.diff; imgTop.src=f.diff; tagL.textContent='DIFF'; tagR.textContent='DIFF'; }
+  else if(mode==='ours'){ imgBot.src=f.ours; imgTop.src=f.ours; tagL.textContent='OURS'; tagR.textContent='OURS'; }
+  else if(mode==='dji'){ imgBot.src=f.dji; imgTop.src=f.dji; tagL.textContent='DJI'; tagR.textContent='DJI'; }
+  else if(mode==='flip'){ const o=flipState; imgBot.src=o?f.dji:f.ours; imgTop.src=o?f.dji:f.ours;
+    tagL.textContent=o?'DJI':'OURS'; tagR.textContent=o?'DJI':'OURS'; }
+  else { imgBot.src=f.dji; imgTop.src=f.ours; tagL.textContent='OURS'; tagR.textContent='DJI'; }
+  divider.style.display = (mode==='split')?'block':'none';
+  imgTop.classList.toggle('top', mode==='split');
+  if(mode!=='split') imgTop.style.clipPath='none'; else imgTop.style.clipPath='';
+  const m=f.metrics||{};
+  metricsEl.innerHTML = m.ssim!==undefined ?
+    `frame <b>${f.n}</b> &middot; SSIM <b>${m.ssim.toFixed(3)}</b> &middot; edge&#8209;NCC <b>${m.edge_ncc.toFixed(3)}</b>`+
+    ` &middot; NCC <b>${m.ncc.toFixed(3)}</b> &middot; PSNR <b>${m.psnr_db.toFixed(1)} dB</b>`+
+    ` &middot; within&nbsp;8 <b>${m.pct_within_8.toFixed(0)}%</b> &middot; within&nbsp;16 <b>${m.pct_within_16.toFixed(0)}%</b>` : `frame <b>${f.n}</b>`;
+}
+function buildFrames(){
+  framesEl.innerHTML='';
+  frames.forEach((f,i)=>{const b=document.createElement('button');b.textContent='frame '+f.n;
+    b.className=i===cur?'active':''; b.onclick=()=>{cur=i;buildFrames();setImages();}; framesEl.appendChild(b);});
+}
+document.querySelectorAll('#modes button').forEach(b=>b.onclick=()=>{
+  mode=b.dataset.mode;
+  document.querySelectorAll('#modes button').forEach(x=>x.classList.toggle('active',x===b));
+  setImages();
+});
+// slider drag
+let dragging=false;
+function moveTo(clientX){const r=stage.getBoundingClientRect();
+  let x=Math.max(0,Math.min(1,(clientX-r.left)/r.width)); stage.style.setProperty('--split',(x*100)+'%');}
+divider.addEventListener('pointerdown',e=>{dragging=true;divider.setPointerCapture(e.pointerId);});
+divider.addEventListener('pointermove',e=>{if(dragging)moveTo(e.clientX);});
+divider.addEventListener('pointerup',()=>dragging=false);
+stage.addEventListener('click',e=>{if(mode==='split'&&e.target!==divider)moveTo(e.clientX);});
+// keyboard: F flip, arrows frames
+addEventListener('keydown',e=>{
+  if(e.key==='f'||e.key==='F'){ if(mode!=='flip'){mode='flip';} flipState=!flipState;
+    document.querySelectorAll('#modes button').forEach(x=>x.classList.toggle('active',x.dataset.mode==='flip')); setImages(); }
+  if(e.key==='ArrowRight'){cur=(cur+1)%frames.length;buildFrames();setImages();}
+  if(e.key==='ArrowLeft'){cur=(cur-1+frames.length)%frames.length;buildFrames();setImages();}
+});
+addEventListener('keyup',e=>{ if((e.key==='f'||e.key==='F')&&mode==='flip'){} });
+
+function init(d){ frames=d; if(!frames.length){metricsEl.textContent='no frames';return;}
+  buildFrames(); setImages(); }
+if(DATA){ init(DATA); }
+else { fetch('manifest.json').then(r=>r.json()).then(init).catch(()=>{metricsEl.textContent='Load manifest.json or inject FRAME_DATA';}); }
+</script>
