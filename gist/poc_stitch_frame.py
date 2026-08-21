@@ -56,8 +56,7 @@ def read_calibration(header: bytes):
     return cams[:2]
 
 
-def read_gravity(sample: bytes):
-    """Gravity vector for one frame from its CAM-meta sample (field 3.2.10)."""
+def _gravity_one(sample: bytes):
     block = _descend(sample, 3, 2, 10)
     if block is None:
         return None
@@ -65,6 +64,23 @@ def read_gravity(sample: bytes):
     if {2, 3, 4} <= set(vals):
         return np.array([vals[2], vals[3], vals[4]], dtype=np.float64)
     return None
+
+
+def read_gravity(container, track, frame: int, window: int = 15):
+    """Gravity for `frame`, averaged over a window of neighbouring frames.
+
+    The raw accelerometer sample carries handheld motion as well as gravity;
+    on a single frame that is a couple of degrees of tilt noise, which reads as
+    a horizon that rises and falls as you pan a 360. Averaging a short window
+    around the frame recovers the true 'down'.
+    """
+    n = len(track.sample_offsets())
+    lo, hi = max(0, frame - window // 2), min(n, frame + window // 2 + 1)
+    samples = [_gravity_one(container.sample_bytes(track, i)) for i in range(lo, hi)]
+    samples = [g for g in samples if g is not None]
+    if not samples:
+        return None
+    return np.mean(samples, axis=0)
 
 
 def main():
@@ -81,7 +97,7 @@ def main():
     if meta is None:
         raise SystemExit("no CAM meta track - not a DJI 360 OSV?")
     cams = read_calibration(container.sample_bytes(meta, 0))
-    gravity = read_gravity(container.sample_bytes(meta, frame))
+    gravity = read_gravity(container, meta, frame)
     print(f"calibration: fx={cams[0].fx:.1f}/{cams[1].fx:.1f}  "
           f"5 radial + 2 tangential terms per lens")
     R = levelling_rotation(gravity) if gravity is not None else np.eye(3)
