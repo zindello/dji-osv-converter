@@ -32,8 +32,9 @@ def main() -> int:
     ap.add_argument("--bitrate", type=int, default=None, help="target bits/s")
     ap.add_argument("--8bit", dest="bit10", action="store_false", help="8-bit output")
     ap.add_argument("--no-audio", dest="audio", action="store_false")
-    ap.add_argument("--no-multiband", dest="multiband", action="store_false",
-                    help="faster linear seam blend instead of multi-band")
+    ap.add_argument("--multiband", dest="multiband", action="store_true",
+                    help="multi-band seam blend (default: linear - identical after "
+                         "exposure match, ~1s/frame faster)")
     ap.add_argument("--software-decode", dest="hardware", action="store_false")
     args = ap.parse_args()
 
