@@ -12,7 +12,9 @@ Field layout (recovered from the wire format; names are ours):
         .2  fy      focal length y, pixels
         .3  cx      principal point x
         .4  cy      principal point y
-        .5-.8 k1..k4  equidistant-fisheye radial distortion
+        .5-.8 k1..k4  radial distortion, first four terms
+        .15   k5      radial distortion, FIFTH term (see project.py)
+        .20   p1,p2   tangential distortion
         .10 width   sensor width the calibration applies to
         .11 height
         .12 yaw     extrinsic orientation, degrees
@@ -54,7 +56,8 @@ class CameraCalib:
     fy: float
     cx: float
     cy: float
-    k: tuple[float, float, float, float]
+    k: tuple[float, ...]          # five radial terms
+    p: tuple[float, float]        # two tangential terms
     width: int
     height: int
     yaw: float
@@ -69,7 +72,8 @@ class CameraCalib:
 
     def __str__(self) -> str:
         return (f"fx={self.fx:.2f} fy={self.fy:.2f} cx={self.cx:.2f} cy={self.cy:.2f} "
-                f"k={[round(v, 5) for v in self.k]} {self.width}x{self.height} "
+                f"k={[round(v, 6) for v in self.k]} p={[round(v, 6) for v in self.p]} "
+                f"{self.width}x{self.height} "
                 f"ypr=({self.yaw:.3f},{self.pitch:.3f},{self.roll:.3f})")
 
 
@@ -93,7 +97,12 @@ def _parse_block(buf: bytes) -> CameraCalib | None:
     cx, cy = _f32(f.get(3)), _f32(f.get(4))
     if None in (fx, fy, cx, cy):
         return None
-    k = tuple(_f32(f.get(i)) or 0.0 for i in (5, 6, 7, 8))
+    # DJI's f-theta model uses FIVE radial terms; the fifth lives in field 15,
+    # away from the other four, which is why it was long mistaken for a stray.
+    k = tuple((_f32(f.get(i)) or 0.0) for i in (5, 6, 7, 8, 15))
+    p = (0.0, 0.0)
+    if 20 in f and f[20][0] == LEN and len(f[20][1]) >= 8:
+        p = struct.unpack("<2f", f[20][1][:8])
     w = _f32(f.get(10)) or 0.0
     h = _f32(f.get(11)) or 0.0
     quat = None
@@ -102,7 +111,7 @@ def _parse_block(buf: bytes) -> CameraCalib | None:
         vals = [_f32(q.get(i)) for i in (1, 2, 3, 4)]
         if all(v is not None for v in vals):
             quat = tuple(vals)
-    return CameraCalib(fx, fy, cx, cy, k, int(w), int(h),
+    return CameraCalib(fx, fy, cx, cy, k, p, int(w), int(h),
                        _f32(f.get(12)) or 0.0, _f32(f.get(13)) or 0.0,
                        _f32(f.get(14)) or 0.0, quat)
 

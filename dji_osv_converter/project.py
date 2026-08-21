@@ -67,72 +67,50 @@ def extrinsic_matrix(cal: CameraCalib, source: str = "quat",
     return R.T if transpose else R
 
 
-def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "equidistant",
-               theta_max: float = np.radians(105.0)) -> np.ndarray:
-    """Map incidence angle to normalised radial distance.
+def radial_map(theta: np.ndarray, cal: CameraCalib, model: str = "ftheta",
+               theta_max: float = 0.0) -> np.ndarray:
+    """DJI's f-theta radial mapping: theta -> distorted theta.
 
-    'equidistant' (theta_d = theta) reproduces the measured image circle almost
-    exactly: fx * radians(105) = 1913 px against a circle of ~1916 px.
+        theta_d = theta + k1*th^3 + k2*th^5 + k3*th^7 + k4*th^9 + k5*th^11
 
-    'poly' applies cal.k as a Brown-style series in theta. That is how these
-    coefficients are usually written, but for this data it is NOT valid - the
-    resulting function is non-monotonic (peaks near 60 deg then collapses,
-    putting the rim at 1142 px instead of 1913 px). A radial distortion curve
-    must increase monotonically, so the coefficients evidently mean something
-    else. Kept only for comparison.
+    Read directly out of DUALFISHEYEVIDEOEIS::CameraModel::project in the
+    DJI Studio binary. Raw radians, no normalisation, no gain - and crucially
+    FIVE radial terms, not four. The fifth is stored apart from the others in
+    the OSV (field 15 rather than 5-8), which is why every four-term reading
+    of these coefficients produced a non-monotonic curve.
 
-    'poly_norm' applies the same series to theta/theta_max, which keeps the
-    correction small and monotonic over the real range.
+    Verified against the curve recovered from DJI ground truth: 2.1 px (cam0)
+    and 3.9 px (cam1) RMS with a best-fit gain of 0.9998 / 0.9975 - i.e. no
+    scale correction is needed, which is what marks the model as correct
+    rather than merely well-fitted.
     """
+    if model == "equidistant":
+        return theta
     if isinstance(model, (tuple, list)) and len(model) == 3 and model[0] == "lut":
-        # Non-parametric radial curve: theta -> radius, interpolated. Used to
-        # test whether the 4-coefficient form is the accuracy limit.
         _, tb, rb = model
         return np.interp(theta, np.asarray(tb), np.asarray(rb),
                          left=float(rb[0]), right=float(rb[-1])) / max(cal.fx, 1e-9)
-    if model == "file":
-        # The k1..k4 stored in the OSV ARE the radial polynomial - but in theta
-        # normalised by pi/2, not raw theta. Applied to raw theta the curve is
-        # non-monotonic and puts the image rim ~770 px short; normalised, it
-        # reproduces the curve recovered from DJI ground truth to 0.24 deg
-        # (cam0) and 0.41 deg (cam1) RMS.
-        #
-        # FILE_GAIN is a constant factor found identically for both cameras
-        # (1.0257 / 1.0259), so it is a property of DJI's pipeline rather than
-        # of either lens.
-        k1, k2, k3, k4 = cal.k
-        t2 = (theta / THETA_NORM) ** 2
-        return FILE_GAIN * theta * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
-    if model == "equidistant":
-        return theta
     if isinstance(model, (tuple, list)) and len(model) == 2 and model[0] == "odd":
-        # r = c0*th + c1*th^3 + c2*th^5 + c3*th^7, the classic fisheye series.
-        # radial_map returns theta_d, and the caller multiplies by fx, so divide
-        # the polynomial through by fx here.
         c = model[1]
-        t = theta
-        r = c[0] * t
+        r = c[0] * theta
         for i, ci in enumerate(c[1:], start=1):
-            r = r + ci * t ** (2 * i + 1)
+            r = r + ci * theta ** (2 * i + 1)
         return r / max(cal.fx, 1e-9)
-    if isinstance(model, (tuple, list)):
-        # explicit (a, b) series in normalised theta, fitted empirically
-        a, b = model
-        tn2 = (theta / theta_max) ** 2
-        return theta * (1.0 + tn2 * (a + tn2 * b))
-    k1, k2, k3, k4 = cal.k
-    if model == "poly":
-        t2 = theta * theta
-    elif model == "poly_norm":
-        t2 = (theta / theta_max) ** 2
-    else:
+    if model not in ("ftheta", "file"):
         raise ValueError(f"unknown lens model {model!r}")
-    return theta * (1.0 + t2 * (k1 + t2 * (k2 + t2 * (k3 + t2 * k4))))
+    td = theta.copy()
+    for i, ki in enumerate(cal.k):
+        td = td + ki * theta ** (2 * i + 3)
+    return td
 
 
 def project_directions(d_cam: np.ndarray, cal: CameraCalib,
-                       max_fov_deg: float = 220.0, model: str = "equidistant"):
-    """Project camera-frame direction vectors to fisheye pixel coordinates."""
+                       max_fov_deg: float = 220.0, model: str = "ftheta"):
+    """Project camera-frame directions to fisheye pixels, DJI's way.
+
+    Mirrors CameraModel::project: f-theta radial term, then Brown tangential
+    distortion, then the intrinsic matrix.
+    """
     X, Y, Z = d_cam[..., 0], d_cam[..., 1], d_cam[..., 2]
     rxy = np.sqrt(X * X + Y * Y)
     theta = np.arctan2(rxy, Z)
@@ -141,8 +119,18 @@ def project_directions(d_cam: np.ndarray, cal: CameraCalib,
 
     with np.errstate(invalid="ignore", divide="ignore"):
         scale = np.where(rxy > 1e-12, theta_d / rxy, 0.0)
-    u = cal.fx * scale * X + cal.cx
-    v = cal.fy * scale * Y + cal.cy
+    xp = scale * X
+    yp = scale * Y
+
+    # Tangential distortion. r^2 is theta_d^2 here because xp^2 + yp^2 reduces
+    # to it exactly, which is how the binary computes it too.
+    p1, p2 = (cal.p if getattr(cal, "p", None) else (0.0, 0.0))
+    r2 = theta_d * theta_d
+    xpp = xp + 2.0 * p1 * xp * yp + p2 * (r2 + 2.0 * xp * xp)
+    ypp = yp + p1 * (r2 + 2.0 * yp * yp) + 2.0 * p2 * xp * yp
+
+    u = cal.fx * xpp + cal.cx
+    v = cal.fy * ypp + cal.cy
 
     valid = (theta <= np.radians(max_fov_deg / 2.0)) \
         & (u >= 0) & (u < cal.width) & (v >= 0) & (v < cal.height) \
@@ -154,7 +142,7 @@ def build_map(cal: CameraCalib, out_w: int, out_h: int,
               R_extra: np.ndarray | None = None,
               source: str = "quat", order: str = "xyzw",
               transpose: bool = False, max_fov_deg: float = 220.0,
-              feather_deg: float = 8.0, model: str = "equidistant",
+              feather_deg: float = 8.0, model: str = "ftheta",
               focal_scale: float = 1.0) -> CameraMap:
     """Build an equirectangular remap for one camera."""
     d = directions(out_h, out_w)

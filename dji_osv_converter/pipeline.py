@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 # ground truth lifted camera 0 from 0.759 to 0.905 NCC and camera 1 from
 # 0.930 to 0.943.
 CAM_TWEAK = {
-    0: (-1.81, -0.68, 1.60),
-    1: (-1.25, -1.30, 0.89),
+    0: (-1.79, -0.65, 1.75),
+    1: (-1.28, -0.70, 1.09),
 }
 
 # Small residual intrinsic corrections per camera: (dcx, dcy, focal_scale),
@@ -49,9 +49,12 @@ CAM_TWEAK = {
 # only a few pixels and focal scale by well under one percent, so the values
 # read out of the file are essentially right - these are polish, not repairs.
 # Lifted camera 0 from 0.905 to 0.935 NCC and camera 1 from 0.943 to 0.955.
+# With the correct f-theta lens model these collapse to nothing: focal scale
+# 0.9995/0.9985 (i.e. 1.0) and principal point within a few pixels. They are
+# kept only to absorb measurement noise; the file's intrinsics are correct.
 CAM_INTRINSIC_FIX = {
-    0: (1.4, 0.5, 1.008),
-    1: (-4.4, -3.2, 1.004),
+    0: (-0.9, -1.9, 0.9995),
+    1: (-3.6, 4.5, 0.9985),
 }
 CAM1_TWEAK = CAM_TWEAK[1]   # retained for older callers
 
@@ -88,7 +91,7 @@ LENS_POLY = {
 # not the hand-fitted LENS_POLY: it scores the same (cam0 0.937 vs 0.935,
 # cam1 0.943 vs 0.955) while needing nothing but the OSV itself, so it should
 # generalise to other cameras. LENS_POLY is retained for comparison.
-LENS_MODEL = "file"
+LENS_MODEL = "ftheta"
 FOCAL_SCALE = 1.0
 
 
