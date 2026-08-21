@@ -20,6 +20,66 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _hwaccel():
+    """A VideoToolbox hardware-decode context, or None if unavailable.
+
+    Hardware decode is ~5x faster than software on Apple silicon and yields
+    10-bit (p010le) frames directly. Falls back silently to software.
+    """
+    try:
+        from av.codec.hwaccel import HWAccel
+        return HWAccel(device_type="videotoolbox", allow_software_fallback=True)
+    except Exception:
+        return None
+
+
+def _video_streams(container):
+    vids = [s for s in container.streams.video
+            if s.codec_context.name != "mjpeg"]
+    if len(vids) < 2:
+        raise ValueError(f"expected 2 HEVC video streams, found {len(vids)}")
+    return vids[:2]
+
+
+def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
+               bit16: bool = False, hardware: bool = True):
+    """Yield ``(index, fisheye0, fisheye1)`` decoding both streams sequentially.
+
+    Streaming decode - far faster than seeking per frame for a whole clip. Each
+    fisheye stream is decoded in its own container so the two advance in
+    lockstep by decode order. ``hardware=True`` uses VideoToolbox when present.
+
+    ``bit16=False`` -> uint8 BGR (OpenCV-ready); ``bit16=True`` -> uint16 RGB
+    with the full 10-bit range preserved.
+    """
+    fmt = "rgb48le" if bit16 else "bgr24"
+    hw = _hwaccel() if hardware else None
+    ca = av.open(str(path), hwaccel=hw) if hw else av.open(str(path))
+    cb = av.open(str(path), hwaccel=hw) if hw else av.open(str(path))
+    try:
+        sa = _video_streams(ca)[0]
+        sb = _video_streams(cb)[1]
+        if not hw:
+            sa.thread_type = sb.thread_type = "AUTO"
+        if start > 0:
+            fps = float(sa.average_rate)
+            for s, c in ((sa, ca), (sb, cb)):
+                c.seek(int(start / fps / s.time_base), stream=s,
+                       backward=True, any_frame=False)
+        for fa, fb in zip(ca.decode(sa), cb.decode(sb)):
+            if fa.pts is None or fb.pts is None:
+                continue
+            idx = int(round(float(fa.pts * sa.time_base) * float(sa.average_rate)))
+            if idx < start:
+                continue
+            if count is not None and idx >= start + count:
+                break
+            yield idx, fa.to_ndarray(format=fmt), fb.to_ndarray(format=fmt)
+    finally:
+        ca.close()
+        cb.close()
+
+
 class OSVDecoder:
     """Random-access decoder for an OSV file's two fisheye streams."""
 

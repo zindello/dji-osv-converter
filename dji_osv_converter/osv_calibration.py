@@ -7,6 +7,12 @@ packet of the 'CAM meta' data stream.
 
 Field layout (recovered from the wire format; names are ours):
 
+    1.3.1           camera<->IMU mount rotation, a Rodrigues vector (3 floats).
+                    The fixed skew between the accelerometer/IMU axes and the
+                    optical axes (the magnetic-mount offset, ~13 deg on the
+                    reference unit). Levelling to raw gravity without applying
+                    this leaves the horizon tilted by that angle.
+
     2.6.<n>         one calibration block per camera, 264 bytes
         .1  fx      focal length x, pixels
         .2  fy      focal length y, pixels
@@ -116,15 +122,14 @@ def _parse_block(buf: bytes) -> CameraCalib | None:
                        _f32(f.get(14)) or 0.0, quat)
 
 
-def read_osv_calibration(path: str | Path,
-                         want_size: tuple[int, int] = (3840, 3840),
-                         ) -> list[CameraCalib]:
-    """Read the camera pair's factory calibration from an OSV file.
+def read_header_sample(path: str | Path) -> bytes | None:
+    """Raw bytes of the CAM-meta header sample carrying the factory calibration.
 
-    Returns [camera0, camera1] matching the requested sensor size.
+    This is the single sample that holds both the per-lens calibration blocks
+    (``2.6.<n>``) and the camera<->IMU mount rotation (``1.3.1``). Returned so
+    callers can extract other header fields without re-reading the container.
     """
     container = av.open(str(path))
-    header = None
     try:
         for s in container.streams:
             if s.type != "data":
@@ -135,18 +140,64 @@ def read_osv_calibration(path: str | Path,
                     if not pkt.size:
                         continue
                     buf = bytes(pkt)
-                    blk = _descend(buf, 2, 6)
-                    if blk is not None:
-                        header = blk
+                    if _descend(buf, 2, 6) is not None:
+                        return buf
                     break
             except Exception:
                 pass
             finally:
                 probe.close()
-            if header is not None:
-                break
     finally:
         container.close()
+    return None
+
+
+def _rodrigues(rvec) -> np.ndarray:
+    """Rotation matrix from a Rodrigues (axis * angle) vector."""
+    rvec = np.asarray(rvec, dtype=np.float64)
+    theta = float(np.linalg.norm(rvec))
+    if theta < 1e-12:
+        return np.eye(3)
+    k = rvec / theta
+    K = np.array([[0.0, -k[2], k[1]],
+                  [k[2], 0.0, -k[0]],
+                  [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+
+def parse_mount_rotation(header_sample: bytes) -> np.ndarray | None:
+    """Camera<->IMU mount rotation from a CAM-meta header sample (field 1.3.1).
+
+    DJI stores the fixed rotation between the IMU/accelerometer axes and the
+    optical axes as a Rodrigues vector - the magnetic-mount skew, ~13 deg on
+    the reference unit. Returns a 3x3 rotation matrix, or None if the field is
+    absent (older firmware / a different model may not carry it).
+
+    To level a horizon this rotation must be applied to the accelerometer's
+    gravity vector; see ``pipeline.levelling_rotation``.
+    """
+    blk = _descend(header_sample, 1, 3, 1)
+    if blk is None or len(blk) < 12:
+        return None
+    x, y, z = struct.unpack_from("<3f", blk, 0)
+    return _rodrigues((x, y, z))
+
+
+def read_mount_rotation(path: str | Path) -> np.ndarray | None:
+    """Camera<->IMU mount rotation (header field 1.3.1) as a 3x3 matrix, or None."""
+    buf = read_header_sample(path)
+    return parse_mount_rotation(buf) if buf is not None else None
+
+
+def read_osv_calibration(path: str | Path,
+                         want_size: tuple[int, int] = (3840, 3840),
+                         ) -> list[CameraCalib]:
+    """Read the camera pair's factory calibration from an OSV file.
+
+    Returns [camera0, camera1] matching the requested sensor size.
+    """
+    buf = read_header_sample(path)
+    header = _descend(buf, 2, 6) if buf is not None else None
 
     if header is None:
         raise ValueError(f"{path}: no calibration block found in metadata header")
@@ -185,4 +236,10 @@ def _descend(buf: bytes, *path: int) -> bytes | None:
     return cur
 
 
-__all__ = ["CameraCalib", "read_osv_calibration"]
+__all__ = [
+    "CameraCalib",
+    "read_osv_calibration",
+    "read_header_sample",
+    "read_mount_rotation",
+    "parse_mount_rotation",
+]

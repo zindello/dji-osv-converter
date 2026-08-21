@@ -23,8 +23,8 @@ import numpy as np
 
 from .calibration import CameraMap
 from .metadata import OSVMeta, read_metadata
-from .orientation import rot_matrix
-from .osv_calibration import CameraCalib, read_osv_calibration
+from .orientation import rot_matrix, rotate_equirect
+from .osv_calibration import CameraCalib, read_osv_calibration, read_mount_rotation
 from .project import build_map
 from .stitcher import blend, multiband_blend, flow_blend, match_exposure, seam_weights, warp
 
@@ -43,15 +43,14 @@ logger = logging.getLogger(__name__)
 #     levelling offset, not a per-lens error. Its two parts:
 #       * ~1 deg about gravity - an arbitrary heading. Gravity fixes only two
 #         of three DOF; which way is "front" is a free choice for a 360.
-#       * ~1.5 deg of tilt - a CONSTANT offset (measured 1.5-1.7 deg on every
-#         frame) between the accelerometer's gravity and DJI's world "down".
-#         DJI applies a camera<->IMU mount rotation (camImuExtriQ / rImu2Slave
-#         in its binary) plus a forward-view EIS orientation. That rotation is
-#         flagged mIsCamImuExtriQRealValue and, for this unit, is NOT stored in
-#         the OSV nor in DJI's shipped calibration - so DJI uses an internal
-#         default. It is not recoverable from the file and, being a stylistic
-#         forward-view offset rather than ground truth, is not chased: a
-#         gravity-levelled horizon is objectively level.
+#       * a CONSTANT tilt - the camera<->IMU mount rotation. The accelerometer
+#         measures "down" in the IMU frame, which sits at a fixed skew from the
+#         optical frame (the magnetic mount, ~13 deg on this unit). DJI stores
+#         this in OSV header field 1.3.1 (a Rodrigues vector) as camImuExtriQ.
+#         It IS recoverable from the file - read_mount_rotation() - and MUST be
+#         applied, or the horizon carries that ~13 deg tilt (level at two
+#         headings, tilted at the quadrants, as a 360 pans). See
+#         levelling_rotation(); validated 13 deg -> ~2 deg against DJI's export.
 CAM_TWEAK = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 0.0)}
 CAM_INTRINSIC_FIX = {0: (0.0, 0.0, 1.0), 1: (0.0, 0.0, 1.0)}
 CAM1_TWEAK = CAM_TWEAK[1]   # retained for older callers
@@ -140,17 +139,54 @@ def align_vectors(a, b) -> np.ndarray:
     return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
 
 
-def levelling_rotation(gravity: np.ndarray) -> np.ndarray:
+def _rot_x(deg: float) -> np.ndarray:
+    a = np.radians(deg)
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+
+# The equirectangular sphere laid out by directions() sits Rx(-90) from the
+# frame DJI's calibration (and the mount rotation, header 1.3.1) is expressed
+# in. Verified: the rotation between our no-levelling stitch and DJI's raw
+# ("plain") export is 90.8 deg about X, i.e. a clean Rx(-90) - the empirical
+# value gives identical results, so this is our own convention, not a tuned
+# constant. The mount is conjugated by it to act in our frame.
+EQUIRECT_CONVENTION = _rot_x(-90.0)
+
+
+def mount_skew(mount: np.ndarray) -> np.ndarray:
+    """Mount rotation (header 1.3.1) expressed in our equirect convention.
+
+    ``C @ mount @ C.T`` where ``C = EQUIRECT_CONVENTION``: a change of basis
+    that re-expresses DJI's camera<->IMU rotation in the frame our gravity
+    vector and stitch live in.
+    """
+    C = EQUIRECT_CONVENTION
+    return C @ np.asarray(mount, dtype=np.float64) @ C.T
+
+
+def levelling_rotation(gravity: np.ndarray,
+                       mount: np.ndarray | None = None) -> np.ndarray:
     """World->rig rotation placing the horizon level, from a gravity sample.
 
+    ``mount`` is the optional camera<->IMU mount rotation from
+    :func:`osv_calibration.read_mount_rotation` (OSV header field 1.3.1). The
+    accelerometer measures "down" in the IMU frame, which sits at a fixed skew
+    from the optical frame (the magnetic-mount offset, ~13 deg); supplying the
+    mount corrects for it and is what makes the horizon truly level. Omit it
+    and the horizon carries that constant tilt.
+
     Yaw is left free: gravity constrains only two of three degrees of freedom,
-    and there is no physically preferred heading.
+    and there is no physically preferred heading for a 360.
     """
     g = np.asarray(gravity, dtype=np.float64)
     n = np.linalg.norm(g)
     if n < 1e-6:
         return np.eye(3)
-    return align_vectors([0.0, -1.0, 0.0], g / n)
+    g = g / n
+    if mount is not None:
+        g = mount_skew(mount) @ g
+    return align_vectors([0.0, -1.0, 0.0], g)
 
 
 def smooth_gravity(grav: np.ndarray, window: int = 15) -> np.ndarray:
@@ -184,6 +220,7 @@ class Stitcher360:
     seam_overlap_ratio: float = SEAM_OVERLAP_RATIO_FALLBACK
     lens_model: object = LENS_MODEL
     focal_scale: float = FOCAL_SCALE
+    mount: np.ndarray | None = None   # camera<->IMU rotation (header 1.3.1)
     _cache: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -193,24 +230,26 @@ class Stitcher360:
         calibs = read_osv_calibration(path)
         meta = read_metadata(path, max_frames=max_frames)
         meta.gravity = smooth_gravity(meta.gravity)
+        mount = read_mount_rotation(path)
         # FOV and blend band both derive from DJI's shipped seam_overlap_ratio.
         ratio = _read_seam_overlap_ratio()
         fov = _fov_from_overlap(ratio) if fov_deg is None else fov_deg
-        logger.info("%s: %s, serial %s, %d samples; seam_overlap %.4f -> FOV %.2f deg",
-                    Path(path).name, meta.model, meta.serial, len(meta.gravity), ratio, fov)
-        return cls(calibs, meta, width, height, fov, ratio)
+        logger.info("%s: %s, serial %s, %d samples; seam_overlap %.4f -> FOV %.2f deg; "
+                    "mount %s", Path(path).name, meta.model, meta.serial,
+                    len(meta.gravity), ratio, fov,
+                    "present (1.3.1)" if mount is not None else "absent")
+        return cls(calibs, meta, width, height, fov, ratio, mount=mount)
 
-    def maps_for(self, frame: int) -> tuple[list[CameraMap], np.ndarray]:
-        """Remap tables and seam weights for a frame's orientation.
+    def maps_for(self, frame: int = 0) -> tuple[list[CameraMap], np.ndarray]:
+        """Remap tables + seam weights in the camera-rig frame.
 
-        Cached per distinct rotation; building 7680x3840 maps is expensive.
+        These are **orientation-independent** and built once: the fisheye->rig
+        projection is fixed by the calibration. Per-frame levelling is applied
+        afterwards as a cheap equirect rotation (see ``stitch``), so the
+        expensive f-theta map build no longer runs per frame. ``frame`` is
+        accepted for API compatibility but does not affect the maps.
         """
-        if frame < len(self.meta.gravity):
-            R = levelling_rotation(self.meta.gravity[frame])
-        else:
-            R = np.eye(3)
-        key = np.round(R, 3).tobytes()
-        hit = self._cache.get(key)
+        hit = self._cache.get("rig")
         if hit is not None:
             return hit
 
@@ -236,36 +275,49 @@ class Stitcher360:
         maps = []
         for i in (0, 1):
             cal, model = prepared(i)
-            maps.append(build_map(cal, R_extra=rot_matrix(*CAM_TWEAK[i]) @ R,
+            maps.append(build_map(cal, R_extra=rot_matrix(*CAM_TWEAK[i]),
                                   model=model, **common))
-        m0, m1 = maps
-        maps = [m0, m1]
         weights = seam_weights(maps, band_px=self.seam_overlap_ratio * self.width)
-        if len(self._cache) > 4:
-            self._cache.clear()
-        self._cache[key] = (maps, weights)
+        self._cache["rig"] = (maps, weights)
         return maps, weights
 
-    def stitch(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
-               frame: int = 0, flow: bool = False,
-               exposure: bool = True, multiband: bool = True) -> np.ndarray:
-        """Stitch one frame pair.
+    def levelling_for(self, frame: int) -> np.ndarray:
+        """The world->rig levelling rotation for a frame (gravity + mount)."""
+        if frame < len(self.meta.gravity):
+            return levelling_rotation(self.meta.gravity[frame], self.mount)
+        return np.eye(3)
 
-        `flow=True` morphs across the seam to absorb parallax; set False for
-        a plain cross-fade (faster, but near objects will ghost at the seam).
-
-        `exposure=True` equalises the two sensors' brightness across the seam.
-        It is off by default while geometry is being validated, because it
-        shifts absolute pixel levels and so masks geometric agreement in the
-        comparison against DJI's export.
-        """
-        maps, weights = self.maps_for(frame)
+    def stitch_rig(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
+                   flow: bool = False, exposure: bool = True,
+                   multiband: bool = True) -> np.ndarray:
+        """Stitch a pair into the camera-rig frame (no levelling)."""
+        maps, weights = self.maps_for()
         warped = [warp(fisheye0, maps[0]), warp(fisheye1, maps[1])]
         if exposure:
             warped = match_exposure(warped, maps)
         if flow:
             return flow_blend(warped, maps, weights)
+        if multiband:
+            return multiband_blend(warped, maps, weights=weights)
         return blend(warped, maps, weights=weights)
+
+    def stitch(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
+               frame: int = 0, flow: bool = False,
+               exposure: bool = True, multiband: bool = True) -> np.ndarray:
+        """Stitch one frame pair to a levelled equirectangular panorama.
+
+        Stitches in the rig frame (fixed maps) then rotates the result to level
+        the horizon for this frame — far cheaper than rebuilding the maps per
+        frame. `flow=True` morphs across the seam to absorb parallax;
+        `multiband=True` uses Laplacian-pyramid blending (seam-invisible);
+        `exposure=True` equalises the two sensors across the seam.
+        """
+        pano = self.stitch_rig(fisheye0, fisheye1, flow=flow,
+                               exposure=exposure, multiband=multiband)
+        R = self.levelling_for(frame)
+        if not np.allclose(R, np.eye(3), atol=1e-9):
+            pano = rotate_equirect(pano, R)
+        return pano
 
     def seam_agreement(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
                        frame: int = 0) -> float:
@@ -285,4 +337,11 @@ class Stitcher360:
         return float((((a - a.mean()) / a.std()) * ((b - b.mean()) / b.std())).mean())
 
 
-__all__ = ["Stitcher360", "levelling_rotation", "align_vectors", "smooth_gravity"]
+__all__ = [
+    "Stitcher360",
+    "levelling_rotation",
+    "mount_skew",
+    "EQUIRECT_CONVENTION",
+    "align_vectors",
+    "smooth_gravity",
+]

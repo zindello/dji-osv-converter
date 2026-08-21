@@ -99,11 +99,17 @@
 <main><div class="wrap">
 
   <figure>
+    <div class="fbtns" id="srcBtns" style="margin-bottom:10px">
+      <button data-src="ours" class="on">Our stitch</button>
+      <button data-src="plain">DJI Plain</button>
+      <button data-src="rs">DJI RockSteady</button>
+      <button data-src="dji">DJI RockSteady + Horizon Levelling</button>
+    </div>
     <div class="stage" id="poc">
       <canvas id="gl"></canvas>
-      <div class="badge">our stitch &middot; drag to look &middot; scroll to zoom</div>
+      <div class="badge" id="glbadge">our stitch &middot; drag to look &middot; scroll to zoom</div>
     </div>
-    <figcaption>One frame from the <code>.OSV</code>, stitched by the pure-Python pipeline below &mdash; f-theta projection, gravity-levelled, multi-band blended. Interactive 360.</figcaption>
+    <figcaption>The same frame, ours vs DJI Studio's export &mdash; both live 360, so you can pan each and compare the horizon. Ours is f-theta projected, gravity-levelled, multi-band blended.</figcaption>
   </figure>
 
   <section>
@@ -205,11 +211,23 @@ u, v    = <b>fx</b>&middot;x'' + <b>cx</b> ,  <b>fy</b>&middot;y'' + <b>cy</b></
 
 <script>
 const POC="__POC__";
+const DJI360="__DJI360__";
+const PLAIN360="__PLAIN360__";
+const RS360="__RS360__";
 const AB=__AB_DATA__;
 
-/* ---------- 360 sphere viewer ---------- */
+/* ---------- 360 sphere viewer (ours vs DJI) ---------- */
 const cv=document.getElementById('gl'), gl=cv.getContext('webgl');
-let yaw=0.0,pitch=0,fov=1.35,tex=null,prog;
+let yaw=0.0,pitch=0,fov=1.35,prog;
+const texes={};   // 'ours'/'dji' -> WebGLTexture
+let src='ours';
+function loadTex(key,uri){const im=new Image();im.onload=()=>{const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  texes[key]=t;if(src===key){resize();draw();}};im.src=uri;}
 if(gl){
   const VS='attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
   const FS='precision highp float;uniform sampler2D t;uniform vec2 res;uniform float yaw,pitch,fov;'+
@@ -224,26 +242,26 @@ if(gl){
   const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
   const l=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);
-  const im=new Image();im.onload=()=>{tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);
-    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,im);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);resize();draw();};
-  im.src=POC;
+  loadTex('ours',POC);loadTex('dji',DJI360);loadTex('plain',PLAIN360);loadTex('rs',RS360);
 }
 const U=n=>gl.getUniformLocation(prog,n);
 function resize(){const d=Math.min(window.devicePixelRatio||1,2);cv.width=cv.clientWidth*d;cv.height=cv.clientHeight*d;gl.viewport(0,0,cv.width,cv.height);}
-function draw(){if(!tex)return;gl.uniform2f(U('res'),cv.width,cv.height);gl.uniform1f(U('yaw'),yaw);
+function draw(){const tex=texes[src];if(!tex)return;gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.uniform2f(U('res'),cv.width,cv.height);gl.uniform1f(U('yaw'),yaw);
   gl.uniform1f(U('pitch'),pitch);gl.uniform1f(U('fov'),fov);gl.drawArrays(gl.TRIANGLES,0,3);}
+document.querySelectorAll('#srcBtns button').forEach(b=>b.onclick=()=>{
+  src=b.dataset.src;
+  document.querySelectorAll('#srcBtns button').forEach(x=>x.classList.toggle('on',x===b));
+  document.getElementById('glbadge').textContent=({ours:'our stitch',plain:'DJI Plain',rs:'DJI RockSteady',dji:'DJI RockSteady + Horizon Levelling'}[src])+' · drag to look · scroll to zoom';
+  draw();});
 let dg=false,lx=0,ly=0,rawPitch=0;
 const DEAD=0.06;  // ~3.4deg horizon dead-zone: pan stays level until you deliberately look up/down
 cv.addEventListener('pointerdown',e=>{dg=true;lx=e.clientX;ly=e.clientY;cv.classList.add('drag');cv.setPointerCapture(e.pointerId);});
 cv.addEventListener('pointerup',()=>{dg=false;cv.classList.remove('drag');});
 cv.addEventListener('pointermove',e=>{if(!dg)return;
-  // grab-and-drag: the point under the cursor follows it (drag right -> pan left)
+  // grab-and-drag: the pixel under the cursor stays glued to it
   yaw+=(e.clientX-lx)*.005*(fov/1.35);
-  rawPitch-=(e.clientY-ly)*.005*(fov/1.35);
+  rawPitch+=(e.clientY-ly)*.005*(fov/1.35);
   rawPitch=Math.max(-1.5,Math.min(1.5,rawPitch));
   // dead-zone: within DEAD of level the view holds flat, then eases in continuously
   pitch=Math.sign(rawPitch)*Math.max(0,Math.abs(rawPitch)-DEAD);

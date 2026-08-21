@@ -26,13 +26,27 @@ def rot_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
     return Ry @ Rx @ Rz
 
 
+_DIR_CACHE: dict[tuple[int, int], np.ndarray] = {}
+
+
 def directions(h: int, w: int) -> np.ndarray:
-    """Unit direction vector for every pixel of an h x w equirect. -> (h,w,3)"""
+    """Unit direction vector for every pixel of an h x w equirect. -> (h,w,3)
+
+    Cached per size: the grid is constant, and rebuilding it at 8K (0.5s, 700MB)
+    every frame was a large share of the levelling cost. The cached array is
+    read-only; callers must not mutate it in place.
+    """
+    hit = _DIR_CACHE.get((h, w))
+    if hit is not None:
+        return hit
     lon = (np.arange(w, dtype=np.float64) / w - 0.5) * 2 * np.pi
     lat = (0.5 - np.arange(h, dtype=np.float64) / h) * np.pi
     lon, lat = np.meshgrid(lon, lat)
     cl = np.cos(lat)
-    return np.stack([cl * np.sin(lon), np.sin(lat), -cl * np.cos(lon)], axis=-1)
+    d = np.stack([cl * np.sin(lon), np.sin(lat), -cl * np.cos(lon)], axis=-1)
+    d.flags.writeable = False
+    _DIR_CACHE[(h, w)] = d
+    return d
 
 
 def dirs_to_uv(d: np.ndarray, w: int, h: int) -> tuple[np.ndarray, np.ndarray]:

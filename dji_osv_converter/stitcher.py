@@ -70,6 +70,23 @@ def seam_weights(cams: list[CameraMap], band_px: float = 292.0) -> np.ndarray:
     return w
 
 
+def _wide_blur(img: np.ndarray, sigma: float) -> np.ndarray:
+    """Large-sigma Gaussian blur, computed cheaply on a downsampled copy.
+
+    A direct GaussianBlur at sigma~480 needs a ~2880-tap kernel and was the
+    single slowest thing in the stitch (>60s at 8K). The result is smooth by
+    construction, so it is computed downsampled and scaled back - visually
+    identical, dramatically faster.
+    """
+    h, w = img.shape[:2]
+    f = max(1, int(round(sigma / 8.0)))
+    if f <= 1:
+        return cv2.GaussianBlur(img, (0, 0), sigma)
+    small = cv2.resize(img, (max(1, w // f), max(1, h // f)), interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), sigma / f)
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
 def match_exposure(warped: list[np.ndarray], cams: list[CameraMap],
                    max_gain: float = 1.6, spatial: bool = True) -> list[np.ndarray]:
     """Equalise the two cameras' exposure/colour across the seam.
@@ -121,8 +138,8 @@ def match_exposure(warped: list[np.ndarray], cams: list[CameraMap],
             logr = np.zeros_like(ca)
             np.log(np.divide(ca, cb, out=np.ones_like(ca), where=m > 0),
                    out=logr, where=m > 0)
-            num = cv2.GaussianBlur(logr * m, (0, 0), sigma)
-            den = cv2.GaussianBlur(m, (0, 0), sigma)
+            num = _wide_blur(logr * m, sigma)
+            den = _wide_blur(m, sigma)
             lr = np.zeros_like(num)
             np.divide(num, den, out=lr, where=den > 1e-4)
             lr = np.clip(lr, np.log(1/max_gain), np.log(max_gain)).astype(np.float32)

@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # --- format: pure Python, no libav ---
 from dji_osv_converter.osv_mp4 import OSVContainer
 from dji_osv_converter.protobuf_wire import iter_fields
-from dji_osv_converter.osv_calibration import _parse_block, _descend
+from dji_osv_converter.osv_calibration import _parse_block, _descend, parse_mount_rotation
 # --- geometry / blend ---
 from dji_osv_converter.project import build_map
 from dji_osv_converter.stitcher import warp, match_exposure, multiband_blend, seam_weights
@@ -96,12 +96,15 @@ def main():
     meta = container.find_track(name="CAM meta")
     if meta is None:
         raise SystemExit("no CAM meta track - not a DJI 360 OSV?")
-    cams = read_calibration(container.sample_bytes(meta, 0))
+    header = container.sample_bytes(meta, 0)
+    cams = read_calibration(header)
     gravity = read_gravity(container, meta, frame)
+    mount = parse_mount_rotation(header)   # camera<->IMU skew, header field 1.3.1
     print(f"calibration: fx={cams[0].fx:.1f}/{cams[1].fx:.1f}  "
           f"5 radial + 2 tangential terms per lens")
-    R = levelling_rotation(gravity) if gravity is not None else np.eye(3)
-    print(f"gravity {np.round(gravity, 3) if gravity is not None else None} -> horizon levelled")
+    R = levelling_rotation(gravity, mount) if gravity is not None else np.eye(3)
+    print(f"gravity {np.round(gravity, 3) if gravity is not None else None} "
+          f"+ mount {'(1.3.1)' if mount is not None else 'absent'} -> horizon levelled")
 
     # 3: pixels, libavcodec
     with OSVDecoder(osv) as dec:

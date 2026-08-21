@@ -151,20 +151,23 @@ def read_metadata(path: str | Path, max_frames: int | None = None) -> OSVMeta:
             serial, model = _header_strings(buf)
 
         block = _sub(body, 2)
-        if block is not None:
-            q = _sub(block, 9)
-            if q is not None:
-                f = _floats(q, 4)
-                if f:
-                    quats.append(f)
-            g = block and _sub(block, 10)
-            if g is not None:
-                gv: dict[int, float] = {}
-                for fnum, wt, v in iter_fields(g):
-                    if wt == I32 and 2 <= fnum <= 4:
-                        gv[fnum] = struct.unpack("<f", v)[0]
-                if len(gv) == 3:
-                    grav.append([gv[2], gv[3], gv[4]])
+        if block is None:
+            continue
+        # Append quaternion and gravity together, keeping the two tracks in
+        # lockstep: a frame missing either gets NaNs in that slot rather than
+        # shifting every later frame's index (which would silently mis-pair
+        # orientation with the wrong frame).
+        q = _sub(block, 9)
+        f = _floats(q, 4) if q is not None else None
+        quats.append(f if f else [np.nan] * 4)
+
+        g = _sub(block, 10)
+        gv: dict[int, float] = {}
+        if g is not None:
+            for fnum, wt, v in iter_fields(g):
+                if wt == I32 and 2 <= fnum <= 4:
+                    gv[fnum] = struct.unpack("<f", v)[0]
+        grav.append([gv[2], gv[3], gv[4]] if len(gv) == 3 else [np.nan] * 3)
 
         if max_frames and len(quats) >= max_frames:
             break
