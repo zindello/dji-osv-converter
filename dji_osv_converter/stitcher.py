@@ -71,17 +71,21 @@ def seam_weights(cams: list[CameraMap], band_px: float = 292.0) -> np.ndarray:
 
 
 def match_exposure(warped: list[np.ndarray], cams: list[CameraMap],
-                   max_gain: float = 1.6) -> list[np.ndarray]:
-    """Equalise the two cameras' exposure and colour using their overlap.
+                   max_gain: float = 1.6, spatial: bool = True) -> list[np.ndarray]:
+    """Equalise the two cameras' exposure/colour across the seam.
 
-    The two sensors meter independently, so one hemisphere is usually a little
-    brighter or cooler than the other and the difference shows as a visible
-    step along the seam. In the overlap both cameras image the same scene, so
-    any difference there is the sensors disagreeing, not the world changing.
+    The sensors meter independently AND each fisheye vignettes toward its rim,
+    by different amounts. Measured in the overlap, the cam0/cam1 luma ratio is
+    not a single number - it runs ~1.05 near the seam centre to ~1.9 toward the
+    rim. A single scalar gain (spatial=False) therefore matches the middle and
+    leaves a bright/dark gradient at the edges of the seam.
 
-    Gains are applied symmetrically - each camera moves half way to the shared
-    mean - so the panorama's overall brightness is preserved rather than being
-    dragged towards whichever camera happens to be camera 0.
+    spatial=True estimates a SMOOTH per-channel gain field from the overlap:
+    each camera is nudged, by a heavily blurred local factor, so the two agree
+    everywhere they see the same scene. The correction is feathered to unity at
+    the edge of the overlap, so single-camera regions keep only the global gain
+    and no new discontinuity is introduced. Vignetting is a lens artifact, so
+    flattening it is faithful, not grading.
     """
     ov = cams[0].valid & cams[1].valid
     if ov.sum() < 5000:
@@ -89,32 +93,43 @@ def match_exposure(warped: list[np.ndarray], cams: list[CameraMap],
 
     a = warped[0].astype(np.float32)
     b = warped[1].astype(np.float32)
-    # Ignore near-black pixels: their ratios are dominated by noise.
     lit = ov & (a.mean(axis=2) > 6) & (b.mean(axis=2) > 6)
     if lit.sum() < 5000:
         return warped
 
-    out = []
+    # --- global per-channel gain: aligns overall level (unchanged behaviour) ---
     gains = []
     for ch in range(3):
-        ma = float(a[..., ch][lit].mean())
-        mb = float(b[..., ch][lit].mean())
-        if ma < 1e-3 or mb < 1e-3:
-            gains.append((1.0, 1.0))
-            continue
-        ratio = mb / ma
-        g0 = float(np.clip(np.sqrt(ratio), 1.0 / max_gain, max_gain))
-        g1 = float(np.clip(1.0 / np.sqrt(ratio), 1.0 / max_gain, max_gain))
-        gains.append((g0, g1))
+        ma = float(a[..., ch][lit].mean()); mb = float(b[..., ch][lit].mean())
+        ratio = (mb / ma) if (ma > 1e-3 and mb > 1e-3) else 1.0
+        gains.append((float(np.clip(np.sqrt(ratio), 1/max_gain, max_gain)),
+                      float(np.clip(1/np.sqrt(ratio), 1/max_gain, max_gain))))
+    for ch in range(3):
+        a[..., ch] *= gains[ch][0]; b[..., ch] *= gains[ch][1]
 
-    logger.debug("exposure gains cam0=%s cam1=%s",
-                 [round(g[0], 3) for g in gains], [round(g[1], 3) for g in gains])
-    for idx, img in enumerate((a, b)):
-        adj = img.copy()
+    if spatial:
+        # Estimate the smooth cam0/cam1 log-ratio and DIFFUSE it across the
+        # frame: a large normalised blur carries the overlap measurement into
+        # each camera's exclusive region and decays to zero far away, so every
+        # camera's gain map is smooth (no internal step) and vanishes where the
+        # seam is irrelevant. Applied fully in the overlap - including the rim,
+        # where the vignetting mismatch is largest.
+        sigma = a.shape[1] / 16.0
         for ch in range(3):
-            adj[..., ch] *= gains[ch][idx]
-        out.append(np.clip(adj, 0, 255).astype(np.uint8))
-    return out
+            ca, cb = a[..., ch], b[..., ch]
+            m = (lit & (ca > 1) & (cb > 1)).astype(np.float32)
+            logr = np.zeros_like(ca)
+            np.log(np.divide(ca, cb, out=np.ones_like(ca), where=m > 0),
+                   out=logr, where=m > 0)
+            num = cv2.GaussianBlur(logr * m, (0, 0), sigma)
+            den = cv2.GaussianBlur(m, (0, 0), sigma)
+            lr = np.zeros_like(num)
+            np.divide(num, den, out=lr, where=den > 1e-4)
+            lr = np.clip(lr, np.log(1/max_gain), np.log(max_gain)).astype(np.float32)
+            a[..., ch] *= np.exp(-0.5 * lr)   # cam0 down half,
+            b[..., ch] *= np.exp(+0.5 * lr)   # cam1 up half -> meet in the middle
+
+    return [np.clip(a, 0, 255).astype(np.uint8), np.clip(b, 0, 255).astype(np.uint8)]
 
 
 def blend(warped: list[np.ndarray], cams: list[CameraMap],
@@ -124,6 +139,54 @@ def blend(warped: list[np.ndarray], cams: list[CameraMap],
     w3 = w[..., None]
     out = warped[0].astype(np.float32) * w3 + warped[1].astype(np.float32) * (1.0 - w3)
     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def multiband_blend(warped: list[np.ndarray], cams: list[CameraMap],
+                    weights: np.ndarray | None = None, band_px: float = 292.0,
+                    levels: int = 6) -> np.ndarray:
+    """Laplacian-pyramid (multi-band) blend across the seam.
+
+    A residual exposure or vignetting difference between the two lenses is a
+    LOW-frequency signal. Multi-band blending mixes low frequencies over a wide
+    transition and high-frequency detail over a narrow one, so a smooth
+    brightness difference fades across the whole overlap and never reads as a
+    line - without having to measure or model it (which parallax makes
+    unreliable). Fine detail still switches sharply at the seam, so there is no
+    ghosting.
+
+    Each camera's invalid region is filled with the other camera so the
+    pyramids are defined across the whole blend; the mask makes that fill
+    irrelevant to the result except at the coarsest levels, where it should be.
+    """
+    w = seam_weights(cams, band_px) if weights is None else weights
+    a = warped[0].astype(np.float32)
+    b = warped[1].astype(np.float32)
+    v0, v1 = cams[0].valid, cams[1].valid
+    # fill holes with the other camera so Laplacians don't see a black cliff
+    a = np.where(v0[..., None], a, b)
+    b = np.where(v1[..., None], b, a)
+
+    def pyr_down_to(img, n):
+        g = [img]
+        for _ in range(n):
+            g.append(cv2.pyrDown(g[-1]))
+        return g
+
+    ga, gb, gw = pyr_down_to(a, levels), pyr_down_to(b, levels), pyr_down_to(w, levels)
+    out_levels = []
+    for i in range(levels):
+        size = (ga[i].shape[1], ga[i].shape[0])
+        la = ga[i] - cv2.pyrUp(ga[i + 1], dstsize=size)
+        lb = gb[i] - cv2.pyrUp(gb[i + 1], dstsize=size)
+        wi = gw[i][..., None]
+        out_levels.append(la * wi + lb * (1.0 - wi))
+    wl = gw[levels][..., None]
+    out_levels.append(ga[levels] * wl + gb[levels] * (1.0 - wl))
+
+    img = out_levels[levels]
+    for i in range(levels - 1, -1, -1):
+        img = cv2.pyrUp(img, dstsize=(out_levels[i].shape[1], out_levels[i].shape[0])) + out_levels[i]
+    return np.clip(img, 0, 255).astype(np.uint8)
 
 
 def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
@@ -223,5 +286,5 @@ def coverage_report(cams: list[CameraMap]) -> dict:
     }
 
 
-__all__ = ["warp", "blend", "flow_blend", "seam_weights", "stitch",
-           "match_exposure", "coverage_report"]
+__all__ = ["warp", "blend", "multiband_blend", "flow_blend", "seam_weights",
+           "stitch", "match_exposure", "coverage_report"]

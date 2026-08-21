@@ -26,7 +26,7 @@ from .metadata import OSVMeta, read_metadata
 from .orientation import rot_matrix
 from .osv_calibration import CameraCalib, read_osv_calibration
 from .project import build_map
-from .stitcher import blend, flow_blend, match_exposure, seam_weights, warp
+from .stitcher import blend, multiband_blend, flow_blend, match_exposure, seam_weights, warp
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +247,8 @@ class Stitcher360:
         return maps, weights
 
     def stitch(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
-               frame: int = 0, flow: bool = True,
-               exposure: bool = True) -> np.ndarray:
+               frame: int = 0, flow: bool = False,
+               exposure: bool = True, multiband: bool = True) -> np.ndarray:
         """Stitch one frame pair.
 
         `flow=True` morphs across the seam to absorb parallax; set False for
