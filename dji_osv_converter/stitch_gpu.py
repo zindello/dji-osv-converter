@@ -120,8 +120,7 @@ class GpuStitcher:
         mb = (b_s * lit).sum((0, 2, 3)) / denom
         ratio = torch.where((ma > 1e-3) & (mb > 1e-3), mb / ma, torch.ones_like(ma))
         ga = ratio.sqrt().clamp(1 / max_gain, max_gain).view(1, 3, 1, 1)
-        a, b = a * ga, b / ga
-        a_s, b_s = a_s * ga, b_s / ga
+        a_s, b_s = a_s * ga, b_s / ga   # low-res only; ga is folded into g0/g1 below
         # smooth spatial log-ratio, diffused at low res then bilinear back up
         logr = torch.log((a_s / b_s.clamp_min(1e-3)).clamp(1e-3, 1e3)) * lit
         num = F.avg_pool2d(logr, 4)
@@ -129,10 +128,15 @@ class GpuStitcher:
         num = F.avg_pool2d(num, 15, 1, 7)
         den = F.avg_pool2d(den, 15, 1, 7).clamp_min(1e-6)
         lr = (num / den).clamp(lo, hi)
-        lr = F.interpolate(lr, size=(self.H, self.W), mode="bilinear", align_corners=False)
-        a = a * torch.exp(-0.5 * lr)
-        b = b * torch.exp(+0.5 * lr)
-        return a, b
+        # Fold the global gain into the spatial gain and exp at LOW res, then
+        # upsample the finished gain maps and apply with one multiply each -
+        # removes two full-res exp and two full-res multiplies. The difference
+        # from exp-at-full-res is a smooth <1% gain (no seam).
+        g0 = ga * torch.exp(-0.5 * lr)
+        g1 = (1.0 / ga) * torch.exp(+0.5 * lr)
+        g0 = F.interpolate(g0, size=(self.H, self.W), mode="bilinear", align_corners=False)
+        g1 = F.interpolate(g1, size=(self.H, self.W), mode="bilinear", align_corners=False)
+        return a * g0, b * g1
 
     def blend(self, a, b):
         return a * self.w3 + b * (1.0 - self.w3)
