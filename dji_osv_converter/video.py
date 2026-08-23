@@ -108,14 +108,31 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             pkt.stream = a_out
             out.mux(pkt)
 
+    # The GPU path stays 10-bit YUV end to end: decode native yuv420p10le,
+    # stitch on-device, emit p010le planes straight to the encoder - no CPU
+    # colour conversion, no 8-bit truncation. The CPU path stays 8-bit BGR.
+    dec_fmt = "yuv420p10le" if use_gpu else "bgr24"
+
     def _stitch(idx, f0, f1):
+        R = stitcher.levelling_for(idx)
         if use_gpu:
-            return gpu_stitch.stitch(f0, f1, stitcher.levelling_for(idx), exposure=exposure)
+            return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure)   # (Y, UV) p010
         return stitcher.stitch(f0, f1, frame=idx, exposure=exposure, multiband=multiband)
 
-    def _encode(pts, pano):
-        fr = av.VideoFrame.from_ndarray(np.ascontiguousarray(pano),
-                                        format="bgr24").reformat(format=vs.pix_fmt)
+    def _p010_frame(planes) -> "av.VideoFrame":
+        Y, UV = planes
+        fr = av.VideoFrame(width, height, "p010le")
+        for plane, data in zip(fr.planes, (Y, UV)):
+            buf = np.frombuffer(plane, np.uint16).reshape(plane.height, plane.line_size // 2)
+            buf[:, :data.shape[1]] = data
+        return fr
+
+    def _encode(pts, result):
+        if use_gpu:
+            fr = _p010_frame(result)
+        else:
+            fr = av.VideoFrame.from_ndarray(np.ascontiguousarray(result),
+                                            format="bgr24").reformat(format=vs.pix_fmt)
         fr.pts = pts
         for pkt in vs.encode(fr):
             out.mux(pkt)
@@ -145,7 +162,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         enc_thread = threading.Thread(target=_encoder, daemon=True)
         enc_thread.start()
         for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
-                                               bit16=False, hardware=hardware), size=4):
+                                               fmt=dec_fmt, hardware=hardware), size=4):
             enc_q.put((done, _stitch(idx, f0, f1)))
             done += 1
             if progress:
@@ -158,7 +175,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             raise enc_err[0]
     else:
         for idx, f0, f1 in iter_pairs(input_osv, start=start, count=count,
-                                      bit16=False, hardware=hardware):
+                                      fmt=dec_fmt, hardware=hardware):
             _encode(done, _stitch(idx, f0, f1))
             done += 1
             if progress:

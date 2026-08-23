@@ -73,17 +73,20 @@ def _video_streams(container):
 
 
 def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
-               bit16: bool = False, hardware: bool = True):
+               bit16: bool = False, hardware: bool = True, fmt: str | None = None):
     """Yield ``(index, fisheye0, fisheye1)`` decoding both streams sequentially.
 
     Streaming decode - far faster than seeking per frame for a whole clip. Each
     fisheye stream is decoded in its own container so the two advance in
     lockstep by decode order. ``hardware=True`` uses VideoToolbox when present.
 
-    ``bit16=False`` -> uint8 BGR (OpenCV-ready); ``bit16=True`` -> uint16 RGB
-    with the full 10-bit range preserved.
+    ``fmt`` sets the pixel format each frame is returned in; if None it is
+    ``bgr24`` (uint8, OpenCV-ready) or ``rgb48le`` (uint16) per ``bit16``. Pass
+    ``fmt="yuv420p10le"`` to keep the native 10-bit YUV (planar, uint16) with no
+    colour conversion - the cheap, precision-preserving path for the GPU stitch.
     """
-    fmt = "rgb48le" if bit16 else "bgr24"
+    if fmt is None:
+        fmt = "rgb48le" if bit16 else "bgr24"
     hw = _hwaccel() if hardware else None
     ca = av.open(str(path), hwaccel=hw) if hw else av.open(str(path))
     cb = av.open(str(path), hwaccel=hw) if hw else av.open(str(path))

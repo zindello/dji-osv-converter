@@ -96,18 +96,20 @@ class GpuStitcher:
         return F.grid_sample(src, self.grid[i], mode="bilinear",
                              align_corners=True, padding_mode="zeros")
 
-    def match_exposure(self, a, b, max_gain: float = 1.6):
+    def match_exposure(self, a, b, max_gain: float = 1.6, maxval: float = 255.0):
         """Global per-channel gain + smooth spatial gain field.
 
         All the masking / reductions / log run on the 1/8-downsampled images
         (the full-res versions were 80% of the cost on MPS); only the final
         gain multiply is at full res. Mirrors the CPU result to within noise.
+        ``maxval`` is the pixel range (255 for 8-bit, 1023 for 10-bit).
         """
         lo, hi = np.log(1 / max_gain), np.log(max_gain)
+        thr = 6.0 * maxval / 255.0                     # "lit" luma threshold
         a_s = F.avg_pool2d(a, 8)                       # (1,3,H/8,W/8)
         b_s = F.avg_pool2d(b, 8)
-        lit = ((self.ov8 > 0.5) & (a_s.mean(1, keepdim=True) > 6)
-               & (b_s.mean(1, keepdim=True) > 6)).float()   # (1,1,hs,ws)
+        lit = ((self.ov8 > 0.5) & (a_s.mean(1, keepdim=True) > thr)
+               & (b_s.mean(1, keepdim=True) > thr)).float()   # (1,1,hs,ws)
         denom = lit.sum().clamp_min(1)
         ma = (a_s * lit).sum((0, 2, 3)) / denom
         mb = (b_s * lit).sum((0, 2, 3)) / denom
@@ -154,6 +156,60 @@ class GpuStitcher:
             pano = self.level(pano, R)
         out = pano.squeeze(0).permute(1, 2, 0).clamp(0, 255).to(torch.uint8)
         return out.cpu().numpy()
+
+    # ---- 10-bit YUV path (BT.709 limited range, validated to <1 LSB) --------
+    #   in : yuv420p10le packed uint16 (H*3/2, W); out: same, ready to encode.
+    #   Keeps the whole thing 10-bit and does the colour conversion on the GPU,
+    #   so there is no CPU swscale in or out and no 8-bit truncation.
+
+    def _yuv_to_rgb(self, packed: np.ndarray, fh: int, fw: int) -> "torch.Tensor":
+        t = torch.from_numpy(np.ascontiguousarray(packed)).to(self.dev).float()
+        Y = t[:fh].view(1, 1, fh, fw)
+        U = t[fh:fh + fh // 4].reshape(1, 1, fh // 2, fw // 2)
+        V = t[fh + fh // 4:fh + fh // 2].reshape(1, 1, fh // 2, fw // 2)
+        Uu = F.interpolate(U, size=(fh, fw), mode="bilinear", align_corners=False)
+        Vu = F.interpolate(V, size=(fh, fw), mode="bilinear", align_corners=False)
+        y, u, v = Y - 64.0, Uu - 512.0, Vu - 512.0
+        R = 1.164384 * y + 1.792741 * v
+        G = 1.164384 * y - 0.213249 * u - 0.532909 * v
+        B = 1.164384 * y + 2.112402 * u
+        return torch.cat([R, G, B], 1).clamp(0, 1023)
+
+    def _rgb_to_p010(self, rgb: "torch.Tensor"):
+        """RGB 10-bit -> p010le planes (Y, interleaved-UV), top-aligned uint16.
+
+        p010 keeps the 10-bit value in the high bits (value << 6), Y full-res
+        and one interleaved U/V plane at half res - exactly what the hardware
+        encoder ingests, so there is no swscale on the way out.
+        """
+        r, g, b = rgb[:, 0:1], rgb[:, 1:2], rgb[:, 2:3]
+        Y = (0.182586 * r + 0.614231 * g + 0.062007 * b + 64.0).clamp(64, 940)
+        U = (-0.100644 * r - 0.338572 * g + 0.439216 * b + 512.0)
+        V = (0.439216 * r - 0.398942 * g - 0.040274 * b + 512.0)
+        Ud = F.avg_pool2d(U, 2).clamp(64, 960)[0, 0]           # (H/2, W/2)
+        Vd = F.avg_pool2d(V, 2).clamp(64, 960)[0, 0]
+        H, W = self.H, self.W
+        Yp = (Y[0, 0] * 64.0).round().clamp(0, 65535)          # (H, W)  << 6
+        UV = (torch.stack([Ud, Vd], -1).reshape(H // 2, W) * 64.0).round().clamp(0, 65535)
+        to = lambda t: t.to(torch.int32).cpu().numpy().astype(np.uint16)
+        return to(Yp), to(UV)
+
+    def warp_yuv(self, packed: np.ndarray, i: int, fh: int = 3840, fw: int = 3840):
+        rgb = self._yuv_to_rgb(packed, fh, fw)
+        return F.grid_sample(rgb, self.grid[i], mode="bilinear",
+                             align_corners=True, padding_mode="zeros")
+
+    def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
+                   exposure: bool = True):
+        """Stitch a 10-bit YUV fisheye pair -> p010le planes (Y, UV) for encode."""
+        a = self.warp_yuv(y0, 0)
+        b = self.warp_yuv(y1, 1)
+        if exposure:
+            a, b = self.match_exposure(a, b, maxval=1023.0)
+        pano = self.blend(a, b)
+        if not np.allclose(R, np.eye(3), atol=1e-9):
+            pano = self.level(pano, R)
+        return self._rgb_to_p010(pano)
 
 
 __all__ = ["available", "pick_device", "GpuStitcher"]
