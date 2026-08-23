@@ -84,9 +84,14 @@ class GpuStitcher:
         # static overlap mask, pooled to 1/8 (exposure works at low res)
         self.ov8 = F.avg_pool2d(self.valid[0] * self.valid[1], 8)
 
-        # directions for the levelling rotation, as (3, H*W) on device
+        # equirect ray components for the levelling rotation, kept as three
+        # contiguous (H*W,) tensors. The rotation is then done with elementwise
+        # ops (9 mul + 6 add) instead of an (H*W,3)@(3,3) matmul, which is
+        # ~5x faster here - MPS handles that skinny matmul shape badly.
         d = directions(height, width).reshape(-1, 3).astype(np.float32)
-        self.dirs = torch.from_numpy(d).to(self.dev)                 # (H*W, 3)
+        self.dx = torch.from_numpy(np.ascontiguousarray(d[:, 0])).to(self.dev)
+        self.dy = torch.from_numpy(np.ascontiguousarray(d[:, 1])).to(self.dev)
+        self.dz = torch.from_numpy(np.ascontiguousarray(d[:, 2])).to(self.dev)
 
     # ---- stages (all operate on (1,3,H,W) float tensors on the device) ----
 
@@ -133,14 +138,19 @@ class GpuStitcher:
         return a * self.w3 + b * (1.0 - self.w3)
 
     def level(self, pano, R: np.ndarray):
-        """Rotate the equirect by R via grid_sample, with longitude wrap."""
-        Rt = torch.from_numpy(np.ascontiguousarray(R.T.astype(np.float32))).to(self.dev)
-        d = self.dirs @ Rt                                  # (H*W, 3)
-        lon = torch.atan2(d[:, 0], -d[:, 2])
-        lat = torch.asin(d[:, 1].clamp(-1, 1))
-        gx = (lon / np.pi)                                  # already in [-1,1]
-        gy = (-2.0 * lat / np.pi)                           # lat +-90 -> +-1
-        gx = torch.remainder(gx + 1.0, 2.0) - 1.0           # wrap longitude
+        """Rotate the equirect by R via grid_sample, with longitude wrap.
+
+        The rotated ray is d' = dirs @ R.T, i.e. d'[j] = sum_k dirs[k]*R[j,k];
+        computed elementwise on the precomputed components (no matmul).
+        """
+        r = R.astype(np.float64)
+        nx = self.dx * r[0, 0] + self.dy * r[0, 1] + self.dz * r[0, 2]
+        ny = self.dx * r[1, 0] + self.dy * r[1, 1] + self.dz * r[1, 2]
+        nz = self.dx * r[2, 0] + self.dy * r[2, 1] + self.dz * r[2, 2]
+        lon = torch.atan2(nx, -nz)
+        lat = torch.asin(ny.clamp(-1, 1))
+        gx = torch.remainder(lon / np.pi + 1.0, 2.0) - 1.0  # wrap longitude
+        gy = -2.0 * lat / np.pi                             # lat +-90 -> +-1
         grid = torch.stack([gx, gy], -1).view(1, self.H, self.W, 2)
         return F.grid_sample(pano, grid, mode="bilinear",
                              align_corners=True, padding_mode="border")
