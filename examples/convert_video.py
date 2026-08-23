@@ -36,6 +36,11 @@ def main() -> int:
                     help="multi-band seam blend (default: linear - identical after "
                          "exposure match, ~1s/frame faster)")
     ap.add_argument("--software-decode", dest="hardware", action="store_false")
+    ap.add_argument("--no-gpu", dest="gpu", action="store_false",
+                    help="force the CPU stitch path")
+    ap.add_argument("--pipeline", dest="pipeline", action="store_true", default=None,
+                    help="overlap decode/stitch/encode on threads (auto-on for CUDA; "
+                         "helps on dedicated GPU + NVENC, not on shared-memory MPS)")
     args = ap.parse_args()
 
     t = time.time()
@@ -48,8 +53,8 @@ def main() -> int:
     out = convert(args.input, args.output, width=args.width, height=args.height,
                   start=args.start, count=args.count, codec=args.codec,
                   bitrate=args.bitrate, bit10=args.bit10, audio=args.audio,
-                  multiband=args.multiband, hardware=args.hardware,
-                  spherical=True, progress=progress)
+                  multiband=args.multiband, hardware=args.hardware, gpu=args.gpu,
+                  pipeline=args.pipeline, spherical=True, progress=progress)
     dt = time.time() - t
     print(f"\nwrote {out} in {dt:.1f}s")
     return 0

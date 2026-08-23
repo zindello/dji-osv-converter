@@ -15,6 +15,8 @@ Everything is derived from the OSV; the ffmpeg binary is never invoked.
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -22,9 +24,9 @@ import av
 import numpy as np
 
 from .pipeline import Stitcher360
-from .decode import iter_pairs
+from .decode import iter_pairs, prefetch
 from .spherical import inject_spherical
-from . import stitch_mps
+from . import stitch_gpu
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             bitrate: int | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = True,
             audio: bool = True, spherical: bool = True, gpu: bool = True,
-            progress=None) -> str:
+            pipeline: bool | None = None, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
     ``count`` limits the number of frames (None = whole clip); ``start`` skips
@@ -58,12 +60,13 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     stitcher = Stitcher360.from_file(input_osv, width=width, height=height)
 
-    # Metal (PyTorch MPS) runs the whole stitch on the Apple GPU - ~5x the CPU
-    # linear path. It uses linear blending (multiband would force the CPU path).
-    use_mps = gpu and not multiband and stitch_mps.available()
-    if use_mps:
+    # The GPU (CUDA or Apple MPS) runs the whole stitch on-device - several x
+    # the CPU linear path. It uses linear blending (multiband forces the CPU
+    # path). Falls back to CPU if torch/GPU is unavailable.
+    use_gpu = gpu and not multiband and stitch_gpu.available()
+    if use_gpu:
         maps, _ = stitcher.maps_for()
-        mps = stitch_mps.MPSStitcher(
+        gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
             width=width, height=height)
 
@@ -105,22 +108,61 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             pkt.stream = a_out
             out.mux(pkt)
 
-    done = 0
-    for idx, f0, f1 in iter_pairs(input_osv, start=start, count=count,
-                                  bit16=False, hardware=hardware):
-        if use_mps:
-            pano = mps.stitch(f0, f1, stitcher.levelling_for(idx), exposure=exposure)
-        else:
-            pano = stitcher.stitch(f0, f1, frame=idx,
-                                   exposure=exposure, multiband=multiband)
-        frame = av.VideoFrame.from_ndarray(np.ascontiguousarray(pano), format="bgr24")
-        frame = frame.reformat(format=vs.pix_fmt)
-        frame.pts = done
-        for pkt in vs.encode(frame):
+    def _stitch(idx, f0, f1):
+        if use_gpu:
+            return gpu_stitch.stitch(f0, f1, stitcher.levelling_for(idx), exposure=exposure)
+        return stitcher.stitch(f0, f1, frame=idx, exposure=exposure, multiband=multiband)
+
+    def _encode(pts, pano):
+        fr = av.VideoFrame.from_ndarray(np.ascontiguousarray(pano),
+                                        format="bgr24").reformat(format=vs.pix_fmt)
+        fr.pts = pts
+        for pkt in vs.encode(fr):
             out.mux(pkt)
-        done += 1
-        if progress:
-            progress(done, n_frames)
+
+    # Overlap decode / stitch / encode on separate threads. Worth it only when
+    # the stages run on separate hardware (CUDA GPU + NVDEC/NVENC + spare CPU
+    # cores); on Apple MPS they share memory and CPU, so threading contends and
+    # serial is faster - default to pipelining only on CUDA.
+    if pipeline is None:
+        pipeline = use_gpu and gpu_stitch.dev.type == "cuda"
+
+    done = 0
+    if pipeline:
+        enc_q: "queue.Queue" = queue.Queue(maxsize=4)
+        enc_done, enc_err = object(), []
+
+        def _encoder():
+            try:
+                while True:
+                    item = enc_q.get()
+                    if item is enc_done:
+                        return
+                    _encode(*item)
+            except Exception as e:                 # noqa: BLE001
+                enc_err.append(e)
+
+        enc_thread = threading.Thread(target=_encoder, daemon=True)
+        enc_thread.start()
+        for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
+                                               bit16=False, hardware=hardware), size=4):
+            enc_q.put((done, _stitch(idx, f0, f1)))
+            done += 1
+            if progress:
+                progress(done, n_frames)
+            if enc_err:
+                raise enc_err[0]
+        enc_q.put(enc_done)
+        enc_thread.join()
+        if enc_err:
+            raise enc_err[0]
+    else:
+        for idx, f0, f1 in iter_pairs(input_osv, start=start, count=count,
+                                      bit16=False, hardware=hardware):
+            _encode(done, _stitch(idx, f0, f1))
+            done += 1
+            if progress:
+                progress(done, n_frames)
 
     for pkt in vs.encode():   # flush encoder
         out.mux(pkt)
@@ -130,7 +172,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     if spherical:
         inject_spherical(output_mp4)
     logger.info("wrote %s: %d frames %dx%d %s %s%s", output_mp4, done, width, height,
-                codec, "MPS" if use_mps else "CPU",
+                codec, str(gpu_stitch.dev) if use_gpu else "CPU",
                 " +audio" if a_out is not None else "")
     return output_mp4
 

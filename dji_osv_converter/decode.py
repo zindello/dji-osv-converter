@@ -20,6 +20,37 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def prefetch(gen, size: int = 4):
+    """Run `gen` on a background thread, yielding its items via a bounded queue.
+
+    Lets decode overlap the consumer (GPU stitch / encode): PyAV's libav calls
+    and torch GPU kernels both release the GIL, so the stages run concurrently.
+    """
+    import queue
+    import threading
+
+    q: "queue.Queue" = queue.Queue(maxsize=size)
+    sentinel = object()
+
+    def worker():
+        try:
+            for item in gen:
+                q.put(item)
+        except Exception as e:               # surface producer errors downstream
+            q.put(e)
+        finally:
+            q.put(sentinel)
+
+    threading.Thread(target=worker, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is sentinel:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
 def _hwaccel():
     """A VideoToolbox hardware-decode context, or None if unavailable.
 

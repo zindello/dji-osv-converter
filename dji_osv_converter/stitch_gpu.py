@@ -1,14 +1,14 @@
-"""Metal (PyTorch MPS) GPU stitch - the whole pipeline resident on the device.
+"""GPU stitch - the whole pipeline resident on the device (PyTorch).
 
 ``stitcher.py`` is the CPU reference; this runs warp -> exposure -> linear
-blend -> levelling entirely on the Apple GPU via PyTorch's MPS backend, so the
-only CPU<->GPU transfers are one fisheye pair up and one panorama down per
-frame. ``grid_sample`` is the remap (warp and the levelling rotation);
-everything else is elementwise / conv tensor ops. Output matches the CPU path
-to bilinear/rounding.
+blend -> levelling entirely on the GPU, so the only CPU<->GPU transfers are one
+fisheye pair up and one panorama down per frame. ``grid_sample`` is the remap
+(warp and the levelling rotation); everything else is elementwise / conv tensor
+ops. Output matches the CPU path to bilinear/rounding.
 
-Requires torch with a working MPS device; construct only when
-``available()`` is true.
+Backend-agnostic: uses CUDA (NVIDIA) when present, else Apple MPS (Metal), else
+falls back to CPU tensors. The stitch math is identical on all three - only the
+device changes. Construct only when ``available()`` is true.
 """
 
 from __future__ import annotations
@@ -18,28 +18,52 @@ import numpy as np
 try:
     import torch
     import torch.nn.functional as F
-    _HAVE = torch.backends.mps.is_available()
 except Exception:                       # torch not installed
     torch = None
-    _HAVE = False
+    F = None
 
 from .calibration import CameraMap
 from .stitcher import seam_weights
 from .orientation import directions
 
 
-def available() -> bool:
-    return bool(_HAVE)
+def pick_device(prefer: str | None = None) -> str | None:
+    """Best available torch device name: 'cuda' > 'mps' > None (torch absent)."""
+    if torch is None:
+        return None
+    if prefer and prefer != "auto":
+        return prefer
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
-class MPSStitcher:
-    """GPU-resident remap grids, masks and weights for one OSV geometry."""
+def available(prefer: str | None = None) -> bool:
+    dev = pick_device(prefer)
+    return dev is not None and dev != "cpu"
+
+
+def _sync(device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
+
+class GpuStitcher:
+    """GPU-resident remap grids, masks and weights for one OSV geometry.
+
+    ``device`` may be "cuda", "mps", "cpu", or None/"auto" to pick the best.
+    """
 
     def __init__(self, cams: list[CameraMap], band_px: float,
-                 width: int, height: int):
-        if not _HAVE:
-            raise RuntimeError("torch MPS not available")
-        self.dev = torch.device("mps")
+                 width: int, height: int, device: str | None = None):
+        if torch is None:
+            raise RuntimeError("torch is not installed")
+        dev = pick_device(device)
+        self.dev = torch.device(dev)
         self.W, self.H = width, height
 
         # warp grids: map_x/map_y (pixel coords in the source fisheye) -> the
@@ -132,4 +156,4 @@ class MPSStitcher:
         return out.cpu().numpy()
 
 
-__all__ = ["available", "MPSStitcher"]
+__all__ = ["available", "pick_device", "GpuStitcher"]
