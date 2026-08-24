@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import av
 import cv2
 import numpy as np
 
@@ -141,19 +142,48 @@ FOCAL_SCALE = 1.0
 # sensor radius fx*theta_d we sample the pixel at. (Indexing by the sensor
 # radius put the seam 11% past the curve and over-brightened - see below.)
 #
+# The gamma comes from the file's declared transfer (stream color_trc), NOT a
+# baked constant - see transfer_gamma().
+#
 # KNOWN LIMITATION: the curve only samples to ~88 deg (undistorted r=1602px) and
 # the blend seam is at 90 deg (r~1639px), so the last value is HELD for the
 # final ~2%. The seam centre stays a touch brighter than DJI's - imperceptible
 # on real 360 footage, documented rather than chased with extrapolation.
-LSC_GAMMA = 2.2
+
+# Encoding transfer gamma per AVCOL_TRC: SDR OETFs (BT.709/601/2020) are a ~0.45
+# power, i.e. gamma ~2.2; linear is 1.0; BT.470BG is 2.8. Vignetting is linear-
+# multiplicative, so the correction is applied as (1/V)^(1/gamma) in the encoded
+# domain. Default 2.2 only when the stream declares nothing (unspecified SDR).
+_TRC_GAMMA = {1: 2.2, 4: 2.2, 6: 2.2, 14: 2.2, 15: 2.2, 8: 1.0, 5: 2.8}
 
 
-def lsc_gain_map(cam_map: CameraMap, calib: CameraCalib) -> np.ndarray | None:
+def transfer_gamma(path: str | Path) -> float:
+    """Encoding transfer gamma from the video stream's declared color_trc."""
+    try:
+        c = av.open(str(path))
+        try:
+            v = next(s for s in c.streams.video
+                     if s.codec_context.name != "mjpeg")
+            trc = v.codec_context.color_trc
+        finally:
+            c.close()
+        try:
+            trc = int(trc)
+        except (TypeError, ValueError):
+            trc = int(getattr(trc, "value", 2))
+        return _TRC_GAMMA.get(trc, 2.2)
+    except Exception:
+        return 2.2
+
+
+def lsc_gain_map(cam_map: CameraMap, calib: CameraCalib,
+                 gamma: float = 2.2) -> np.ndarray | None:
     """Per-output-pixel devignetting gain for one lens, or None if no LSC data.
 
     Inverts the f-theta radial map to recover the undistorted radius the factory
-    curve is authored in, looks up V, and returns ``(1/V)^(1/2.2)`` as a float32
-    array matching ``cam_map`` (equirect/rig frame).
+    curve is authored in, looks up V, and returns ``(1/V)^(1/gamma)`` as a
+    float32 array matching ``cam_map`` (equirect/rig frame). ``gamma`` is the
+    file's encoding transfer (see :func:`transfer_gamma`).
     """
     if calib.lsc is None:
         return None
@@ -164,7 +194,7 @@ def lsc_gain_map(cam_map: CameraMap, calib: CameraCalib) -> np.ndarray | None:
     theta = np.interp(theta_d, radial_map(tg, calib, "ftheta"), tg)
     undist_r = calib.fx * theta
     V = np.clip(np.interp(undist_r, r_lsc, v_lsc, right=v_lsc[-1]), 0.3, 1.0)
-    return ((1.0 / V) ** (1.0 / LSC_GAMMA)).astype(np.float32)
+    return ((1.0 / V) ** (1.0 / gamma)).astype(np.float32)
 
 
 def align_vectors(a, b) -> np.ndarray:
@@ -314,6 +344,7 @@ class Stitcher360:
     levelling: str = "plain"          # "plain" (raw, match DJI) | "horizon" | "none"
     level_smooth_half: int = LEVEL_SMOOTH_HALF
     up_track: np.ndarray | None = None   # smoothed rig-frame world-up, per frame
+    gamma: float = 2.2                # encoding transfer, from the stream color_trc
     _cache: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -336,7 +367,7 @@ class Stitcher360:
                     "present (1.3.1)" if mount is not None else "absent")
         return cls(calibs, meta, width, height, fov, ratio, mount=mount,
                    levelling=levelling, level_smooth_half=level_smooth_half,
-                   up_track=up_track)
+                   up_track=up_track, gamma=transfer_gamma(path))
 
     def maps_for(self, frame: int = 0) -> tuple[list[CameraMap], np.ndarray]:
         """Remap tables + seam weights in the camera-rig frame.
@@ -389,7 +420,7 @@ class Stitcher360:
         if hit is not None:
             return hit
         maps, _ = self.maps_for()
-        gains = [lsc_gain_map(maps[i], self.calibs[i]) for i in (0, 1)]
+        gains = [lsc_gain_map(maps[i], self.calibs[i], self.gamma) for i in (0, 1)]
         gains = None if any(g is None for g in gains) else gains
         self._cache["lsc"] = gains
         return gains
