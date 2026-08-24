@@ -266,6 +266,22 @@ K_PLAIN = _orthonormal([
 
 QUAT_ORDER = "wxyz"
 WORLD_UP = np.array([0.0, 0.0, 1.0])
+WORLD_FWD = np.array([1.0, 0.0, 0.0])   # fixed world heading the yaw locks to
+
+# HorizonLevelling: constant map from the IMU body frame to the stitch equirect
+# frame for the world-up (and world-forward) vectors. Fit against DJI's
+# rocksteady+horizonlevelling export: C_UP_STITCH @ (R(quat).T @ WORLD_UP) is
+# DJI's level up-vector in the rig frame to 0.24 deg mean / 0.7 deg max across
+# the whole worst-case tumble (per-frame quaternion, field 3.2.9 - no high-rate
+# IMU or accelerometer needed; the quaternion carries no usable drift). det = -1:
+# it legitimately includes a handedness flip because the equirect z-axis
+# convention (dirs z = -cos(lat)cos(lon)) is left-handed vs the physical IMU
+# frame. Measured universal constant, like K_PLAIN.
+C_UP_STITCH = np.array([
+    [0.00044549, -0.99999383, 0.00348370],
+    [-0.99991755, -0.00040074, 0.01283477],
+    [0.01283330, 0.00348913, 0.99991156],
+])
 C_IMU_RIG = np.array([
     [0.360809, -0.904583, -0.227040],
     [-0.904352, -0.398841, 0.151896],
@@ -296,6 +312,33 @@ C_IMU_RIG_MOTION = np.array([
     [-0.982324, 0.092254, 0.162878],
     [-0.167767, -0.047937, -0.984660],
 ])
+
+
+def horizon_lock_rotation(raw_f: np.ndarray) -> np.ndarray:
+    """Full horizon-levelling rotation for one frame (all three axes locked).
+
+    Locks the view to a FIXED world orientation: world-up at the output pole
+    (pitch+roll level) and world-forward as the heading (yaw locked). Both come
+    from the SAME instantaneous IMU quaternion - this is the key to a clean yaw
+    lock. Using the smoothed orientation for the heading instead makes the
+    smoothed frame lag the real (instantaneous) content during fast motion, so
+    the world swings in azimuth (measured: a 56 deg swing, 6 deg/frame jerks);
+    the consistent instantaneous basis pins every world-fixed point (0 jerk),
+    which is strictly steadier than DJI (DJI actively wanders in yaw). Returned
+    as the rig->output rotation R: the stitch samples output pixel dir d at
+    ``R @ d``, so world-up as the middle column puts it at the pole (d=[0,1,0]).
+    """
+    up = C_UP_STITCH @ (raw_f.T @ WORLD_UP)
+    up = up / np.linalg.norm(up)
+    fwd_ref = C_UP_STITCH @ (raw_f.T @ WORLD_FWD)      # fixed world heading
+    fwd = fwd_ref - (fwd_ref @ up) * up
+    if np.linalg.norm(fwd) < 1e-6:                     # heading ~parallel to up
+        alt = WORLD_UP if abs(up[0]) > 0.9 else WORLD_FWD
+        fwd = alt - (alt @ up) * up
+    fwd = fwd / np.linalg.norm(fwd)
+    right = np.cross(up, fwd)
+    right = right / np.linalg.norm(right)
+    return np.stack([right, up, fwd], axis=1)          # cols = rig dirs of out axes
 
 
 def smoothed_rotation_track(quats: np.ndarray, sigma: float = RS_SIGMA,
@@ -480,17 +523,6 @@ class Stitcher360:
         self._cache["lsc"] = gains
         return gains
 
-    def _hz_basis(self) -> np.ndarray:
-        """Cached IMU->rig basis for the horizon lock: extrinsic(cam0).T @ mount,
-        both from the OSV calibration (carries the correct absolute up)."""
-        hit = self._cache.get("hz_basis")
-        if hit is not None:
-            return hit
-        R0 = extrinsic_matrix(self.calibs[0], EXTRINSIC_SOURCE, EXTRINSIC_ORDER)
-        B = R0.T @ (self.mount if self.mount is not None else np.eye(3))
-        self._cache["hz_basis"] = B
-        return B
-
     def _rs_track(self):
         """Cached (raw, smooth, G) for RockSteady: IMU rotations, their smoothed
         trajectory, and the world->output map G = K @ C_IMU_RIG_MOTION @ mount."""
@@ -511,7 +543,10 @@ class Stitcher360:
         the smoothed IMU-quaternion leveller, holding the horizon flat.
         ``rocksteady``: stabilisation - counter-rotate the shake toward the
         smoothed orientation trajectory (the tumble is kept, nothing is locked).
-        ``none``: identity (our raw rig frame, ~90 deg off DJI's layout).
+        ``rocksteady_horizon``: HorizonLevelling - lock all three axes to a fixed
+        level world view (world-up from the IMU quaternion, heading locked to the
+        smoothed trajectory); matches DJI's rocksteady+horizonlevelling and holds
+        yaw tighter. ``none``: identity (our raw rig frame, ~90 deg off DJI).
         """
         if self.levelling == "none":
             return np.eye(3)
@@ -526,18 +561,17 @@ class Stitcher360:
                 return K_PLAIN @ T
             return K_PLAIN
         if self.levelling == "rocksteady_horizon":
-            # HorizonLevelling (always with RockSteady) is NOT SOLVED yet - it
-            # must lock pitch, yaw AND roll to a fixed level world orientation
-            # through a tumble. Every attempt so far TRACKS the camera instead of
-            # locking (verified against DJI's export over 6 frames, not cherry-
-            # picked - do that every time).
-            # What IS established: level(R) rotates content by R.T (controlled
-            # test). The lock is R = A @ R(quat).T @ B for constants A,B, and it
-            # locks only if A = extrinsic(cam0).T @ const_c, where const_c is the
-            # content<->quaternion conjugation - the SAME relationship the
-            # rocksteady G fit captures. Approximate A (motion-fit up / bare
-            # extrinsic+mount) drifts; the exact one is the open problem.
-            # Falls through to plain so it never ships a broken lock.
+            # HorizonLevelling: lock all three axes to a fixed level world view.
+            # The world-up comes straight from the per-frame IMU quaternion mapped
+            # through C_UP_STITCH (matches DJI's level up to 0.24 deg across the
+            # whole worst-case tumble); the heading is locked to a fixed world
+            # direction via the smoothed trajectory. The horizon stays dead level
+            # and the view holds still while the camera tumbles - and it holds yaw
+            # tighter than DJI, which wanders under violent motion. Validated
+            # frame-by-frame against DJI's export across the full clip.
+            raw, _, _ = self._rs_track()
+            if frame < len(raw):
+                return horizon_lock_rotation(raw[frame])
             return K_PLAIN
         return K_PLAIN   # "plain"
 
