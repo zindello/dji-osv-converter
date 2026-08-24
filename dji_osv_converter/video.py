@@ -43,6 +43,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             codec: str = "hevc_videotoolbox", bit10: bool = True,
             bitrate: int | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = True,
+            exposure_wb: bool = False,
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
@@ -116,7 +117,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     def _stitch(idx, f0, f1):
         R = stitcher.levelling_for(idx)
         if use_gpu:
-            return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure)   # (Y, UV) p010
+            return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure,
+                                         wb=exposure_wb)                 # (Y, UV) p010
         return stitcher.stitch(f0, f1, frame=idx, exposure=exposure, multiband=multiband)
 
     def _p010_frame(planes) -> "av.VideoFrame":

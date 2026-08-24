@@ -84,6 +84,24 @@ class GpuStitcher:
         # static overlap mask, pooled to 1/8 (exposure works at low res)
         self.ov8 = F.avg_pool2d(self.valid[0] * self.valid[1], 8)
 
+        # --- YUV-native (4:2:0) statics ---
+        # Chroma runs at half res, so it needs the warp grid and the seam weight
+        # at half res. DECIMATE the grid (stride-2 slice), never interpolate it:
+        # the levelling/warp grids carry a +-1 longitude-wrap discontinuity, and
+        # averaging across it corrupts the wrap meridian.
+        self.grid_half = [g[:, ::2, ::2, :].contiguous() for g in self.grid]
+        self.w3h = F.avg_pool2d(self.w3, 2)                          # (1,1,H/2,W/2)
+        # BT.709 limited-range centred YUV<->RGB matrices; used only by the opt-in
+        # per-channel white-balance exposure path (_expose_wb).
+        self._Minv = torch.tensor(                                   # centred YUV -> RGB
+            [[1.164384, 0.0, 1.792741],
+             [1.164384, -0.213249, -0.532909],
+             [1.164384, 2.112402, 0.0]], dtype=torch.float32, device=self.dev)
+        self._M = torch.tensor(                                      # RGB -> centred YUV
+            [[0.182586, 0.614231, 0.062007],
+             [-0.100644, -0.338572, 0.439216],
+             [0.439216, -0.398942, -0.040274]], dtype=torch.float32, device=self.dev)
+
         # equirect ray components for the levelling rotation, kept as three
         # contiguous (H*W,) tensors. The rotation is then done with elementwise
         # ops (9 mul + 6 add) instead of an (H*W,3)@(3,3) matmul, which is
@@ -141,8 +159,8 @@ class GpuStitcher:
     def blend(self, a, b):
         return a * self.w3 + b * (1.0 - self.w3)
 
-    def level(self, pano, R: np.ndarray):
-        """Rotate the equirect by R via grid_sample, with longitude wrap.
+    def _level_grid(self, R: np.ndarray) -> "torch.Tensor":
+        """Full-res sampling grid (1,H,W,2) for rotating the equirect by R.
 
         The rotated ray is d' = dirs @ R.T, i.e. d'[j] = sum_k dirs[k]*R[j,k];
         computed elementwise on the precomputed components (no matmul).
@@ -155,7 +173,11 @@ class GpuStitcher:
         lat = torch.asin(ny.clamp(-1, 1))
         gx = torch.remainder(lon / np.pi + 1.0, 2.0) - 1.0  # wrap longitude
         gy = -2.0 * lat / np.pi                             # lat +-90 -> +-1
-        grid = torch.stack([gx, gy], -1).view(1, self.H, self.W, 2)
+        return torch.stack([gx, gy], -1).view(1, self.H, self.W, 2)
+
+    def level(self, pano, R: np.ndarray):
+        """Rotate the equirect by R via grid_sample, with longitude wrap."""
+        grid = self._level_grid(R)
         return F.grid_sample(pano, grid, mode="bilinear",
                              align_corners=True, padding_mode="border")
 
@@ -171,59 +193,145 @@ class GpuStitcher:
         out = pano.squeeze(0).permute(1, 2, 0).clamp(0, 255).to(torch.uint8)
         return out.cpu().numpy()
 
-    # ---- 10-bit YUV path (BT.709 limited range, validated to <1 LSB) --------
-    #   in : yuv420p10le packed uint16 (H*3/2, W); out: same, ready to encode.
-    #   Keeps the whole thing 10-bit and does the colour conversion on the GPU,
-    #   so there is no CPU swscale in or out and no 8-bit truncation.
+    # ---- 10-bit YUV-native path (BT.709 limited range) ----------------------
+    #   in : yuv420p10le packed uint16 (H*3/2, W); out: p010le planes (Y, UV).
+    #   The whole stitch stays in 4:2:0 YUV - no RGB round-trip. warp, blend and
+    #   levelling are linear/resampling ops that work directly on the Y and
+    #   half-res UV planes, so the ~180ms/frame of YUV<->RGB conversion is gone
+    #   and chroma is never up- then down-sampled (sharper). Luma Y is warped at
+    #   full res, chroma UV at half res on the decimated grids.
 
-    def _yuv_to_rgb(self, packed: np.ndarray, fh: int, fw: int) -> "torch.Tensor":
+    def _split_yuv(self, packed: np.ndarray, fh: int = 3840, fw: int = 3840):
         t = torch.from_numpy(np.ascontiguousarray(packed)).to(self.dev).float()
         Y = t[:fh].view(1, 1, fh, fw)
         U = t[fh:fh + fh // 4].reshape(1, 1, fh // 2, fw // 2)
         V = t[fh + fh // 4:fh + fh // 2].reshape(1, 1, fh // 2, fw // 2)
-        Uu = F.interpolate(U, size=(fh, fw), mode="bilinear", align_corners=False)
-        Vu = F.interpolate(V, size=(fh, fw), mode="bilinear", align_corners=False)
-        y, u, v = Y - 64.0, Uu - 512.0, Vu - 512.0
-        R = 1.164384 * y + 1.792741 * v
-        G = 1.164384 * y - 0.213249 * u - 0.532909 * v
-        B = 1.164384 * y + 2.112402 * u
-        return torch.cat([R, G, B], 1).clamp(0, 1023)
+        return Y, U, V
 
-    def _rgb_to_p010(self, rgb: "torch.Tensor"):
-        """RGB 10-bit -> p010le planes (Y, interleaved-UV), top-aligned uint16.
+    def _warp_planes(self, packed: np.ndarray, i: int):
+        """Warp one fisheye's YUV -> (Yw (1,1,H,W), UVw (1,2,H/2,W/2))."""
+        Y, U, V = self._split_yuv(packed)
+        Yw = F.grid_sample(Y, self.grid[i], mode="bilinear",
+                           align_corners=True, padding_mode="zeros")
+        UVw = F.grid_sample(torch.cat([U, V], 1), self.grid_half[i],
+                            mode="bilinear", align_corners=True, padding_mode="zeros")
+        return Yw, UVw
 
-        p010 keeps the 10-bit value in the high bits (value << 6), Y full-res
-        and one interleaved U/V plane at half res - exactly what the hardware
-        encoder ingests, so there is no swscale on the way out.
+    def _spatial_gain(self, Ya, Yb, max_gain: float):
+        """Smooth luma gain field from the overlap, at low res.
+
+        Returns the global luma gain ``gl`` (scalar), the low-res ``lit`` mask,
+        its sum ``den``, and the four upsampled scalar spatial gain maps
+        (full/half res, for image a/b): g = exp(-/+ 0.5 * logratio).
         """
-        r, g, b = rgb[:, 0:1], rgb[:, 1:2], rgb[:, 2:3]
-        Y = (0.182586 * r + 0.614231 * g + 0.062007 * b + 64.0).clamp(64, 940)
-        U = (-0.100644 * r - 0.338572 * g + 0.439216 * b + 512.0)
-        V = (0.439216 * r - 0.398942 * g - 0.040274 * b + 512.0)
-        Ud = F.avg_pool2d(U, 2).clamp(64, 960)[0, 0]           # (H/2, W/2)
-        Vd = F.avg_pool2d(V, 2).clamp(64, 960)[0, 0]
-        H, W = self.H, self.W
-        Yp = (Y[0, 0] * 64.0).round().clamp(0, 65535)          # (H, W)  << 6
-        UV = (torch.stack([Ud, Vd], -1).reshape(H // 2, W) * 64.0).round().clamp(0, 65535)
-        to = lambda t: t.to(torch.int32).cpu().numpy().astype(np.uint16)
-        return to(Yp), to(UV)
+        lo, hi = np.log(1 / max_gain), np.log(max_gain)
+        thr = 6.0 * 1023.0 / 255.0
+        a_s = F.avg_pool2d(Ya, 8)
+        b_s = F.avg_pool2d(Yb, 8)
+        lit = ((self.ov8 > 0.5) & (a_s > thr) & (b_s > thr)).float()
+        den = lit.sum().clamp_min(1)
+        lma = (a_s * lit).sum()
+        lmb = (b_s * lit).sum()
+        ratio = torch.where((lma > 1e-3) & (lmb > 1e-3), lmb / lma,
+                            torch.ones((), device=self.dev))
+        gl = ratio.sqrt().clamp(1 / max_gain, max_gain)
+        logr = torch.log(((a_s * gl) / (b_s / gl).clamp_min(1e-3)).clamp(1e-3, 1e3)) * lit
+        num = F.avg_pool2d(logr, 4)
+        dn = F.avg_pool2d(lit, 4).clamp_min(1e-6)
+        num = F.avg_pool2d(num, 15, 1, 7)
+        dn = F.avg_pool2d(dn, 15, 1, 7).clamp_min(1e-6)
+        lr = (num / dn).clamp(lo, hi)
+        s0, s1 = torch.exp(-0.5 * lr), torch.exp(0.5 * lr)
+        up = lambda s, sz: F.interpolate(s, size=sz, mode="bilinear", align_corners=False)
+        full, half = (self.H, self.W), (self.H // 2, self.W // 2)
+        return gl, lit, den, a_s, b_s, (up(s0, full), up(s0, half),
+                                        up(s1, full), up(s1, half))
 
-    def warp_yuv(self, packed: np.ndarray, i: int, fh: int = 3840, fw: int = 3840):
-        rgb = self._yuv_to_rgb(packed, fh, fw)
-        return F.grid_sample(rgb, self.grid[i], mode="bilinear",
-                             align_corners=True, padding_mode="zeros")
+    @staticmethod
+    def _scale_centred(Y, UV, gY, gUV):
+        """Apply a (broadcastable) gain to centred Y and UV planes."""
+        return (Y - 64.0) * gY + 64.0, (UV - 512.0) * gUV + 512.0
+
+    def _expose_luma(self, Ya, UVa, Yb, UVb, max_gain=1.6):
+        """Luma-only exposure: one scalar gain field per image (the default)."""
+        gl, _, _, _, _, (s0f, s0h, s1f, s1h) = self._spatial_gain(Ya, Yb, max_gain)
+        Ya, UVa = self._scale_centred(Ya, UVa, gl * s0f, gl * s0h)
+        Yb, UVb = self._scale_centred(Yb, UVb, (1 / gl) * s1f, (1 / gl) * s1h)
+        return Ya, UVa, Yb, UVb
+
+    def _apply_wb(self, Y, UV, C, sf, sh):
+        """Scalar spatial gain s(x,y) then a constant per-channel matrix C, in YUV.
+
+        C = M @ diag(gain) @ M^-1 is the RGB per-channel gain expressed in centred
+        YUV. The Y cross-terms need chroma at full res; that correction is tiny and
+        smooth, so the half-res U/V are bilinear-upsampled just for it.
+        """
+        y = Y - 64.0
+        u = UV[:, 0:1] - 512.0
+        v = UV[:, 1:2] - 512.0
+        # Y's chroma cross-term is a single smooth channel; build it at half res
+        # and upsample once (rather than upsampling U and V separately).
+        cross = F.interpolate(C[0, 1] * u + C[0, 2] * v, size=(self.H, self.W),
+                              mode="bilinear", align_corners=False)
+        yh = F.avg_pool2d(y, 2)
+        yp = C[0, 0] * y + cross
+        up = C[1, 0] * yh + C[1, 1] * u + C[1, 2] * v
+        vp = C[2, 0] * yh + C[2, 1] * u + C[2, 2] * v
+        return yp * sf + 64.0, torch.cat([up * sh + 512.0, vp * sh + 512.0], 1)
+
+    def _expose_wb(self, Ya, UVa, Yb, UVb, max_gain=1.6):
+        """Per-channel white-balance exposure (opt-in): luma spatial gain plus a
+        constant per-channel gain, matching the RGB path's lens-colour match."""
+        _, lit, den, a_s, b_s, (s0f, s0h, s1f, s1h) = self._spatial_gain(Ya, Yb, max_gain)
+        # per-channel global gain from the low-res overlap, in RGB
+        UVa_s, UVb_s = F.avg_pool2d(UVa, 4), F.avg_pool2d(UVb, 4)   # UV half -> 1/8
+
+        def to_rgb(Ys, UVs):
+            y, u, v = Ys - 64.0, UVs[:, 0:1] - 512.0, UVs[:, 1:2] - 512.0
+            return torch.cat([1.164384 * y + 1.792741 * v,
+                              1.164384 * y - 0.213249 * u - 0.532909 * v,
+                              1.164384 * y + 2.112402 * u], 1)
+
+        ma = (to_rgb(a_s, UVa_s) * lit).sum((0, 2, 3)) / den
+        mb = (to_rgb(b_s, UVb_s) * lit).sum((0, 2, 3)) / den
+        ratio = torch.where((ma > 1e-3) & (mb > 1e-3), mb / ma, torch.ones_like(ma))
+        ga = ratio.sqrt().clamp(1 / max_gain, max_gain)            # (3,) per channel
+        Ca = self._M @ torch.diag(ga) @ self._Minv
+        Cb = self._M @ torch.diag(1.0 / ga) @ self._Minv
+        Ya, UVa = self._apply_wb(Ya, UVa, Ca, s0f, s0h)
+        Yb, UVb = self._apply_wb(Yb, UVb, Cb, s1f, s1h)
+        return Ya, UVa, Yb, UVb
+
+    def _pack_p010(self, Y, UV):
+        """(Y (1,1,H,W), UV (1,2,H/2,W/2)) -> p010le planes, top-aligned uint16."""
+        H, W = self.H, self.W
+        Yp = (Y[0, 0].clamp(64, 940) * 64.0).round().clamp(0, 65535)
+        UVp = (UV[0].permute(1, 2, 0).reshape(H // 2, W).clamp(64, 960)
+               * 64.0).round().clamp(0, 65535)
+        to = lambda t: t.to(torch.int32).cpu().numpy().astype(np.uint16)
+        return to(Yp), to(UVp)
 
     def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
-                   exposure: bool = True):
-        """Stitch a 10-bit YUV fisheye pair -> p010le planes (Y, UV) for encode."""
-        a = self.warp_yuv(y0, 0)
-        b = self.warp_yuv(y1, 1)
+                   exposure: bool = True, wb: bool = False):
+        """Stitch a 10-bit YUV fisheye pair -> p010le planes (Y, UV) for encode.
+
+        ``wb=True`` uses the per-channel white-balance exposure match (matches the
+        two lenses' colour, ~15ms/frame dearer); the default luma-only match is
+        the shipping path.
+        """
+        Ya, UVa = self._warp_planes(y0, 0)
+        Yb, UVb = self._warp_planes(y1, 1)
         if exposure:
-            a, b = self.match_exposure(a, b, maxval=1023.0)
-        pano = self.blend(a, b)
+            expose = self._expose_wb if wb else self._expose_luma
+            Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)
+        Y = Ya * self.w3 + Yb * (1.0 - self.w3)
+        UV = UVa * self.w3h + UVb * (1.0 - self.w3h)
         if not np.allclose(R, np.eye(3), atol=1e-9):
-            pano = self.level(pano, R)
-        return self._rgb_to_p010(pano)
+            gf = self._level_grid(R)
+            gh = gf[:, ::2, ::2, :].contiguous()
+            Y = F.grid_sample(Y, gf, mode="bilinear", align_corners=True, padding_mode="border")
+            UV = F.grid_sample(UV, gh, mode="bilinear", align_corners=True, padding_mode="border")
+        return self._pack_p010(Y, UV)
 
 
 __all__ = ["available", "pick_device", "GpuStitcher"]

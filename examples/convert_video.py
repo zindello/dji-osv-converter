@@ -35,6 +35,10 @@ def main() -> int:
     ap.add_argument("--multiband", dest="multiband", action="store_true",
                     help="multi-band seam blend (default: linear - identical after "
                          "exposure match, ~1s/frame faster)")
+    ap.add_argument("--exposure-wb", dest="exposure_wb", action="store_true",
+                    help="per-channel white-balance exposure match between the two "
+                         "lenses (default: luma-only; ~15ms/frame dearer, helps in "
+                         "mixed/coloured lighting)")
     ap.add_argument("--software-decode", dest="hardware", action="store_false")
     ap.add_argument("--no-gpu", dest="gpu", action="store_false",
                     help="force the CPU stitch path")
@@ -53,7 +57,8 @@ def main() -> int:
     out = convert(args.input, args.output, width=args.width, height=args.height,
                   start=args.start, count=args.count, codec=args.codec,
                   bitrate=args.bitrate, bit10=args.bit10, audio=args.audio,
-                  multiband=args.multiband, hardware=args.hardware, gpu=args.gpu,
+                  multiband=args.multiband, exposure_wb=args.exposure_wb,
+                  hardware=args.hardware, gpu=args.gpu,
                   pipeline=args.pipeline, spherical=True, progress=progress)
     dt = time.time() - t
     print(f"\nwrote {out} in {dt:.1f}s")
