@@ -59,7 +59,8 @@ class GpuStitcher:
     """
 
     def __init__(self, cams: list[CameraMap], band_px: float,
-                 width: int, height: int, device: str | None = None):
+                 width: int, height: int, device: str | None = None,
+                 lsc_gain: list[np.ndarray] | None = None):
         if torch is None:
             raise RuntimeError("torch is not installed")
         dev = pick_device(device)
@@ -110,6 +111,15 @@ class GpuStitcher:
         self.dx = torch.from_numpy(np.ascontiguousarray(d[:, 0])).to(self.dev)
         self.dy = torch.from_numpy(np.ascontiguousarray(d[:, 1])).to(self.dev)
         self.dz = torch.from_numpy(np.ascontiguousarray(d[:, 2])).to(self.dev)
+
+        # Factory lens-shading (devignette) gain per lens, in equirect space -
+        # multiplied into each warped lens before the blend to lift the vignetted
+        # rim at the seam. Full res for Y, pooled to half for chroma. None = off.
+        self.lsc_Y = self.lsc_UV = None
+        if lsc_gain is not None:
+            self.lsc_Y = [torch.from_numpy(np.ascontiguousarray(g))[None, None].to(self.dev)
+                          for g in lsc_gain]
+            self.lsc_UV = [F.avg_pool2d(g, 2) for g in self.lsc_Y]
 
     # ---- stages (all operate on (1,3,H,W) float tensors on the device) ----
 
@@ -209,12 +219,19 @@ class GpuStitcher:
         return Y, U, V
 
     def _warp_planes(self, packed: np.ndarray, i: int):
-        """Warp one fisheye's YUV -> (Yw (1,1,H,W), UVw (1,2,H/2,W/2))."""
+        """Warp one fisheye's YUV -> (Yw (1,1,H,W), UVw (1,2,H/2,W/2)).
+
+        Applies the factory lens-shading gain (devignette) if present, so the
+        vignetted rim is lifted before the blend and the seam stops reading dark.
+        """
         Y, U, V = self._split_yuv(packed)
         Yw = F.grid_sample(Y, self.grid[i], mode="bilinear",
                            align_corners=True, padding_mode="zeros")
         UVw = F.grid_sample(torch.cat([U, V], 1), self.grid_half[i],
                             mode="bilinear", align_corners=True, padding_mode="zeros")
+        if self.lsc_Y is not None:
+            Yw = (Yw - 64.0) * self.lsc_Y[i] + 64.0
+            UVw = (UVw - 512.0) * self.lsc_UV[i] + 512.0
         return Yw, UVw
 
     def _spatial_gain(self, Ya, Yb, max_gain: float):

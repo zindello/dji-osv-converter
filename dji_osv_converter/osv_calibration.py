@@ -70,6 +70,10 @@ class CameraCalib:
     pitch: float
     roll: float
     quat: tuple[float, float, float, float] | None = None
+    lsc: tuple[np.ndarray, np.ndarray] | None = None
+    # factory lens-shading curve (OSV calib fields 22/23): (radii_px, V) where V
+    # is the normalised brightness profile vs UNDISTORTED radius fx*theta (peak
+    # 1.0 at centre). None when the file carries no curve.
 
     def camera_matrix(self) -> np.ndarray:
         return np.array([[self.fx, 0, self.cx],
@@ -117,9 +121,34 @@ def _parse_block(buf: bytes) -> CameraCalib | None:
         vals = [_f32(q.get(i)) for i in (1, 2, 3, 4)]
         if all(v is not None for v in vals):
             quat = tuple(vals)
+    # Factory lens-shading (vignetting) curve: field 22 = sample positions along a
+    # diameter (centre first), field 23 = the matching brightness profile. We fold
+    # to a radius->V curve (V normalised to its peak). The radius axis is the
+    # UNDISTORTED radius fx*theta - see the LSC notes in pipeline.py.
+    lsc = _parse_lsc(f.get(22), f.get(23))
     return CameraCalib(fx, fy, cx, cy, k, p, int(w), int(h),
                        _f32(f.get(12)) or 0.0, _f32(f.get(13)) or 0.0,
-                       _f32(f.get(14)) or 0.0, quat)
+                       _f32(f.get(14)) or 0.0, quat, lsc)
+
+
+def _packed_f32(entry) -> np.ndarray | None:
+    if entry is None or entry[0] != LEN or len(entry[1]) < 8 or len(entry[1]) % 4:
+        return None
+    return np.frombuffer(entry[1], dtype="<f4")
+
+
+def _parse_lsc(pos_entry, val_entry) -> tuple[np.ndarray, np.ndarray] | None:
+    pos, val = _packed_f32(pos_entry), _packed_f32(val_entry)
+    if pos is None or val is None or len(pos) != len(val) or val.max() <= 0:
+        return None
+    r = np.abs(pos - pos[0])                     # radius from centre (pos[0])
+    v = val / val.max()                          # normalise peak to 1.0
+    order = np.argsort(r)
+    r, v = r[order], v[order]
+    ur, idx = np.unique(np.round(r, 1), return_index=True)   # collapse the mirror
+    if len(ur) < 3 or np.ptp(v) < 1e-3:          # all-zero / degenerate block
+        return None
+    return ur.astype(np.float64), v[idx].astype(np.float64)
 
 
 def read_header_sample(path: str | Path) -> bytes | None:

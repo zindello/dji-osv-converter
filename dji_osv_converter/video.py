@@ -70,7 +70,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
-            width=width, height=height)
+            width=width, height=height, lsc_gain=stitcher.lsc_gains())
 
     src = av.open(input_osv)
     vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")

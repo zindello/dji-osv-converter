@@ -25,7 +25,7 @@ from .calibration import CameraMap
 from .metadata import OSVMeta, read_metadata, quat_to_matrix
 from .orientation import rot_matrix, rotate_equirect
 from .osv_calibration import CameraCalib, read_osv_calibration, read_mount_rotation
-from .project import build_map
+from .project import build_map, radial_map
 from .stitcher import blend, multiband_blend, flow_blend, match_exposure, seam_weights, warp
 
 logger = logging.getLogger(__name__)
@@ -124,6 +124,47 @@ LENS_POLY = {
 # generalise to other cameras. LENS_POLY is retained for comparison.
 LENS_MODEL = "ftheta"
 FOCAL_SCALE = 1.0
+
+
+# ---- Factory lens-shading (vignetting) correction --------------------------
+#
+# The stitch seam sits where both lenses reach their vignetted rim, so it reads
+# as a dark arc without correction. The OSV ships a factory lens-shading curve
+# per lens (calibration fields 22/23; see osv_calibration._parse_lsc): a radial
+# brightness profile V(r), peak 1.0 at centre, ~24% falloff by the seam. We
+# divide it out - gain = (1/V)^(1/2.2). The exponent is the BT.709 transfer the
+# footage is encoded in (colorspace=1): vignetting is multiplicative in linear
+# light, so in the encoded domain the gain carries the transfer's power, not a
+# free parameter. Applied per output pixel by the ray's radius.
+#
+# The curve is indexed by the UNDISTORTED radius fx*theta, NOT the distorted
+# sensor radius fx*theta_d we sample the pixel at. (Indexing by the sensor
+# radius put the seam 11% past the curve and over-brightened - see below.)
+#
+# KNOWN LIMITATION: the curve only samples to ~88 deg (undistorted r=1602px) and
+# the blend seam is at 90 deg (r~1639px), so the last value is HELD for the
+# final ~2%. The seam centre stays a touch brighter than DJI's - imperceptible
+# on real 360 footage, documented rather than chased with extrapolation.
+LSC_GAMMA = 2.2
+
+
+def lsc_gain_map(cam_map: CameraMap, calib: CameraCalib) -> np.ndarray | None:
+    """Per-output-pixel devignetting gain for one lens, or None if no LSC data.
+
+    Inverts the f-theta radial map to recover the undistorted radius the factory
+    curve is authored in, looks up V, and returns ``(1/V)^(1/2.2)`` as a float32
+    array matching ``cam_map`` (equirect/rig frame).
+    """
+    if calib.lsc is None:
+        return None
+    r_lsc, v_lsc = calib.lsc
+    r_sensor = np.hypot(cam_map.map_x - calib.cx, cam_map.map_y - calib.cy)
+    theta_d = r_sensor / calib.fx
+    tg = np.linspace(0.0, 2.2, 4000)                    # invert theta_d -> theta
+    theta = np.interp(theta_d, radial_map(tg, calib, "ftheta"), tg)
+    undist_r = calib.fx * theta
+    V = np.clip(np.interp(undist_r, r_lsc, v_lsc, right=v_lsc[-1]), 0.3, 1.0)
+    return ((1.0 / V) ** (1.0 / LSC_GAMMA)).astype(np.float32)
 
 
 def align_vectors(a, b) -> np.ndarray:
@@ -337,6 +378,21 @@ class Stitcher360:
         weights = seam_weights(maps, band_px=self.seam_overlap_ratio * self.width)
         self._cache["rig"] = (maps, weights)
         return maps, weights
+
+    def lsc_gains(self) -> list[np.ndarray] | None:
+        """Per-lens devignetting gain maps (equirect), or None if no LSC in file.
+
+        Built once from the factory lens-shading curve; multiplied into each
+        warped lens before the blend to lift the vignetted rim at the seam.
+        """
+        hit = self._cache.get("lsc")
+        if hit is not None:
+            return hit
+        maps, _ = self.maps_for()
+        gains = [lsc_gain_map(maps[i], self.calibs[i]) for i in (0, 1)]
+        gains = None if any(g is None for g in gains) else gains
+        self._cache["lsc"] = gains
+        return gains
 
     def levelling_for(self, frame: int) -> np.ndarray:
         """The rig-frame rotation to apply for this frame, per ``levelling`` mode.
