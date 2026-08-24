@@ -273,6 +273,59 @@ C_IMU_RIG = np.array([
 ])
 LEVEL_SMOOTH_HALF = 20   # boxcar half-window (frames) over the up-vector track
 
+# ---- RockSteady (stabilisation) --------------------------------------------
+#
+# RockSteady is stabilisation only: it low-pass-filters the camera's orientation
+# trajectory and counter-rotates each frame toward the smoothed version, so the
+# high-frequency shake is removed while the camera's gross tumble (yaw + pitch +
+# roll) passes straight through - NOTHING is locked. Measured against DJI's
+# rocksteady export: frame-to-frame jitter drops from 0.47 deg (plain) to 0.11
+# deg (DJI's own is 0.04), with the mean motion preserved (1.77 vs DJI 1.79).
+#
+# Per frame:  T(f) = G @ (Rq_smooth(f) @ Rq(f).T) @ G.T   (shake in output frame)
+#             R(f) = K_PLAIN @ T(f)
+# where Rq is the IMU orientation matrix, Rq_smooth its Gaussian-smoothed
+# trajectory, and G = K_PLAIN @ C_IMU_RIG_MOTION @ mount is the world->output
+# map. C_IMU_RIG_MOTION is the FULL (yaw-included) IMU<->rig convention - unlike
+# C_IMU_RIG (fit yaw-free from the horizon up-vector), the full orientation is
+# pinned by fitting the frame-to-frame motion of DJI's plain export. mount
+# (header 1.3.1) makes it per-unit.
+RS_SIGMA = 15.0          # Gaussian sigma (frames) of the trajectory smoother
+C_IMU_RIG_MOTION = np.array([
+    [-0.083031, -0.994581, 0.062567],
+    [-0.982324, 0.092254, 0.162878],
+    [-0.167767, -0.047937, -0.984660],
+])
+
+
+def smoothed_rotation_track(quats: np.ndarray, sigma: float = RS_SIGMA,
+                            order: str = QUAT_ORDER):
+    """Per-frame IMU rotation matrices and their Gaussian-smoothed trajectory.
+
+    Returns ``(raw (N,3,3), smooth (N,3,3))``. Smoothing is a Gaussian-weighted
+    mean of the rotation matrices, re-orthonormalised (SVD) per frame - a matrix
+    low-pass that removes shake while keeping the tumble.
+    """
+    N = len(quats)
+    raw = np.stack([quat_to_matrix(q, order) if np.isfinite(q).all() else np.eye(3)
+                    for q in quats])
+    ok = np.array([np.isfinite(q).all() for q in quats])
+    half = int(3 * sigma)
+    ker = np.exp(-0.5 * (np.arange(-half, half + 1) / sigma) ** 2)
+    smooth = np.empty_like(raw)
+    for f in range(N):
+        lo, hi = max(0, f - half), min(N, f + half + 1)
+        w = ker[lo - (f - half): hi - (f - half)] * ok[lo:hi]
+        s = w.sum()
+        if s < 1e-6:
+            smooth[f] = raw[f]
+            continue
+        M = np.tensordot(w / s, raw[lo:hi], axes=(0, 0))
+        U, _, Vt = np.linalg.svd(M)
+        R = U @ Vt
+        smooth[f] = R if np.linalg.det(R) > 0 else U @ np.diag([1, 1, -1]) @ Vt
+    return raw, smooth
+
 
 def device_up_track(quats: np.ndarray, order: str = QUAT_ORDER) -> np.ndarray:
     """World-up expressed in the IMU frame per frame: ``R(quat).T @ WORLD_UP``.
@@ -341,8 +394,10 @@ class Stitcher360:
     lens_model: object = LENS_MODEL
     focal_scale: float = FOCAL_SCALE
     mount: np.ndarray | None = None   # camera<->IMU rotation (header 1.3.1)
-    levelling: str = "plain"          # "plain" (raw, match DJI) | "horizon" | "none"
+    # "plain" (raw, match DJI) | "horizon" | "rocksteady" | "none"
+    levelling: str = "plain"
     level_smooth_half: int = LEVEL_SMOOTH_HALF
+    rs_sigma: float = RS_SIGMA         # RockSteady trajectory-smoother sigma (frames)
     up_track: np.ndarray | None = None   # smoothed rig-frame world-up, per frame
     gamma: float = 2.2                # encoding transfer, from the stream color_trc
     _cache: dict = field(default_factory=dict, repr=False)
@@ -425,19 +480,39 @@ class Stitcher360:
         self._cache["lsc"] = gains
         return gains
 
+    def _rs_track(self):
+        """Cached (raw, smooth, G) for RockSteady: IMU rotations, their smoothed
+        trajectory, and the world->output map G = K @ C_IMU_RIG_MOTION @ mount."""
+        hit = self._cache.get("rs")
+        if hit is not None:
+            return hit
+        raw, smooth = smoothed_rotation_track(self.meta.quats, self.rs_sigma)
+        B = C_IMU_RIG_MOTION @ (self.mount if self.mount is not None else np.eye(3))
+        Gmat = K_PLAIN @ B
+        self._cache["rs"] = (raw, smooth, Gmat)
+        return raw, smooth, Gmat
+
     def levelling_for(self, frame: int) -> np.ndarray:
         """The rig-frame rotation to apply for this frame, per ``levelling`` mode.
 
         ``plain`` (default): the constant layout convention ``K_PLAIN`` - matches
         DJI's raw, unlevelled export (the image follows the camera). ``horizon``:
-        the smoothed IMU-quaternion leveller, holding the horizon flat. ``none``:
-        identity (our raw rig frame, ~90 deg off DJI's layout).
+        the smoothed IMU-quaternion leveller, holding the horizon flat.
+        ``rocksteady``: stabilisation - counter-rotate the shake toward the
+        smoothed orientation trajectory (the tumble is kept, nothing is locked).
+        ``none``: identity (our raw rig frame, ~90 deg off DJI's layout).
         """
         if self.levelling == "none":
             return np.eye(3)
         if self.levelling == "horizon":
             if self.up_track is not None and frame < len(self.up_track):
                 return levelling_rotation(self.up_track[frame])
+            return K_PLAIN
+        if self.levelling == "rocksteady":
+            raw, smooth, Gmat = self._rs_track()
+            if frame < len(raw):
+                T = Gmat @ (smooth[frame] @ raw[frame].T) @ Gmat.T
+                return K_PLAIN @ T
             return K_PLAIN
         return K_PLAIN   # "plain"
 
@@ -497,7 +572,9 @@ __all__ = [
     "up_track_from_meta",
     "device_up_track",
     "smooth_unit_track",
+    "smoothed_rotation_track",
     "K_PLAIN",
     "C_IMU_RIG",
+    "C_IMU_RIG_MOTION",
     "align_vectors",
 ]
