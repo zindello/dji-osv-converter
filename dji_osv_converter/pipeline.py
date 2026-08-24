@@ -26,7 +26,7 @@ from .calibration import CameraMap
 from .metadata import OSVMeta, read_metadata, quat_to_matrix
 from .orientation import rot_matrix, rotate_equirect
 from .osv_calibration import CameraCalib, read_osv_calibration, read_mount_rotation
-from .project import build_map, radial_map
+from .project import build_map, radial_map, extrinsic_matrix
 from .stitcher import blend, multiband_blend, flow_blend, match_exposure, seam_weights, warp
 
 logger = logging.getLogger(__name__)
@@ -480,6 +480,17 @@ class Stitcher360:
         self._cache["lsc"] = gains
         return gains
 
+    def _hz_basis(self) -> np.ndarray:
+        """Cached IMU->rig basis for the horizon lock: extrinsic(cam0).T @ mount,
+        both from the OSV calibration (carries the correct absolute up)."""
+        hit = self._cache.get("hz_basis")
+        if hit is not None:
+            return hit
+        R0 = extrinsic_matrix(self.calibs[0], EXTRINSIC_SOURCE, EXTRINSIC_ORDER)
+        B = R0.T @ (self.mount if self.mount is not None else np.eye(3))
+        self._cache["hz_basis"] = B
+        return B
+
     def _rs_track(self):
         """Cached (raw, smooth, G) for RockSteady: IMU rotations, their smoothed
         trajectory, and the world->output map G = K @ C_IMU_RIG_MOTION @ mount."""
@@ -517,12 +528,18 @@ class Stitcher360:
         if self.levelling == "rocksteady_horizon":
             # HorizonLevelling (always with RockSteady): lock ALL THREE axes to a
             # fixed, gravity-aligned world orientation - the view holds still and
-            # the horizon stays dead level while the camera tumbles. Same as
-            # rocksteady but with the reference frame set to identity (the
-            # quaternion world frame) instead of the smoothed trajectory.
-            raw, smooth, Gmat = self._rs_track()
-            if frame < len(raw):
-                return K_PLAIN @ Gmat @ raw[frame].T @ Gmat.T
+            # the horizon stays dead level while the camera tumbles.
+            #   R(f) = B_hz @ R(quat_f).T
+            # B_hz = extrinsic(cam0).T @ mount is the IMU->rig basis from the OSV
+            # CALIBRATION (camera-0 extrinsic + header-1.3.1 mount), NOT the
+            # motion-fit convention: it carries the correct absolute up, so the
+            # full per-frame orientation inverts to a level lock even through a
+            # fast tumble. (The motion-fit C_IMU_RIG_MOTION has a wrong absolute
+            # up - fine for rocksteady's tiny corrections, but a large-tilt lock
+            # exposes it as gross tilt.)
+            q = self.meta.quats
+            if frame < len(q) and np.isfinite(q[frame]).all():
+                return self._hz_basis() @ quat_to_matrix(q[frame], QUAT_ORDER).T
             return K_PLAIN
         return K_PLAIN   # "plain"
 
