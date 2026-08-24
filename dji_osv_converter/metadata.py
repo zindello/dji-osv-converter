@@ -183,6 +183,62 @@ def read_metadata(path: str | Path, max_frames: int | None = None) -> OSVMeta:
     return OSVMeta(serial, model, q, np.asarray(grav, dtype=np.float64))
 
 
+def read_highrate(path: str | Path) -> list[np.ndarray | None]:
+    """Per-frame high-rate IMU orientation quaternions (field 3.3.2.1.3).
+
+    Each video frame's metadata sample carries ~33 fused orientation
+    quaternions spanning the frame period (~1 kHz; sample 0 coincides with the
+    per-frame quaternion 3.2.9 at frame START). Returns one (S, 4) array per
+    frame, aligned with ``read_metadata``'s frame order, None where absent.
+    The stream is found by content (the one whose samples carry 3.3.2.1),
+    matching read_metadata's self-validating stream selection.
+    """
+    container = av.open(str(path))
+    data_streams = [s.index for s in container.streams if s.type == "data"]
+    container.close()
+
+    target = None
+    for si in data_streams:
+        probe = av.open(str(path))
+        try:
+            for n, pkt in enumerate(probe.demux(probe.streams[si])):
+                if n > 6:
+                    break
+                if pkt.size and _sub(bytes(pkt), 3, 3, 2, 1) is not None:
+                    target = si
+                    break
+        except Exception:
+            pass
+        finally:
+            probe.close()
+        if target is not None:
+            break
+    if target is None:
+        return []
+
+    out: list[np.ndarray | None] = []
+    probe = av.open(str(path))
+    try:
+        for pkt in probe.demux(probe.streams[target]):
+            if not pkt.size:
+                continue
+            blk = _sub(bytes(pkt), 3, 3, 2, 1)
+            hq = []
+            if blk is not None:
+                try:
+                    for fnum, wt, v in iter_fields(blk):
+                        if fnum == 3 and wt == LEN:
+                            f = _floats(v, 4)
+                            if f:
+                                hq.append(f)
+                except Exception:
+                    pass
+            out.append(np.asarray(hq, dtype=np.float64) if len(hq) >= 4 else None)
+    finally:
+        probe.close()
+    return out
+
+
 def quat_to_matrix(q: np.ndarray, order: str = "xyzw") -> np.ndarray:
     """Unit quaternion -> 3x3 rotation matrix.
 
@@ -207,4 +263,4 @@ def quat_to_matrix(q: np.ndarray, order: str = "xyzw") -> np.ndarray:
     ])
 
 
-__all__ = ["OSVMeta", "read_metadata", "quat_to_matrix"]
+__all__ = ["OSVMeta", "read_metadata", "read_highrate", "quat_to_matrix"]

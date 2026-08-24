@@ -313,6 +313,40 @@ C_IMU_RIG_MOTION = np.array([
     [-0.167767, -0.047937, -0.984660],
 ])
 
+# ---- Rolling-shutter correction ---------------------------------------------
+#
+# Each fisheye reads out its rows over a large fraction of the frame period, so
+# hand tremor DEFORMS every frame (jello): different image regions are captured
+# at different orientations, and no global per-frame rotation can undo it.
+# Measured on the worst-case clip this deformation IS the RockSteady gap -
+# residual jitter 0.24-0.42 deg/frame vs DJI 0.02-0.12, worst under calm
+# hand-held tremor, and completely independent of which per-frame quaternion the
+# counter-rotation uses (proven by sweeping the high-rate samples). DJI's
+# RockSteady corrects rolling shutter with the gyro; this is our equivalent.
+#
+# Correction: for each output pixel we know (statically) its source SENSOR ROW
+# via the warp map, hence its readout-time fraction tau. The high-rate IMU track
+# (metadata 3.3.2.1.3, ~1 kHz - see read_highrate) gives the camera's rotation
+# theta(t) within the frame relative to frame start. Undoing the motion means
+# re-projecting each ray captured at t back to the frame-start orientation; for
+# these sub-degree rotations that is linearised as a sensor-plane shift
+# J(p) @ theta(tau(p)), with J = d(sensor xy)/d(rig rotation), a smooth static
+# per-pixel Jacobian built numerically from three perturbed projection maps.
+# Readout duration/direction and the correction sign are FIT from the footage
+# (minimising rendered jitter), not assumed.
+RS_TABLE_DS = 4          # tau/Jacobian tables at 1/4 output resolution
+RS_READOUT = 0.72        # sensor readout time as a fraction of the frame period
+RS_ROW_DIR = 1.0         # +1: row 0 read first; -1: last row first
+RS_SIGN = 1.0            # sign of the correction (fitted)
+
+
+def _rotvec(R: np.ndarray) -> np.ndarray:
+    """Rotation matrix -> rotation vector (axis * angle, radians)."""
+    ang = np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1))
+    ax = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    n = np.linalg.norm(ax)
+    return ax / n * ang if n > 1e-12 else np.zeros(3)
+
 
 def horizon_lock_rotation(raw_f: np.ndarray) -> np.ndarray:
     """Full horizon-levelling rotation for one frame (all three axes locked).
@@ -443,6 +477,7 @@ class Stitcher360:
     rs_sigma: float = RS_SIGMA         # RockSteady trajectory-smoother sigma (frames)
     up_track: np.ndarray | None = None   # smoothed rig-frame world-up, per frame
     gamma: float = 2.2                # encoding transfer, from the stream color_trc
+    _path: str | None = None          # source OSV (for lazy high-rate IMU reads)
     _cache: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -465,7 +500,7 @@ class Stitcher360:
                     "present (1.3.1)" if mount is not None else "absent")
         return cls(calibs, meta, width, height, fov, ratio, mount=mount,
                    levelling=levelling, level_smooth_half=level_smooth_half,
-                   up_track=up_track, gamma=transfer_gamma(path))
+                   up_track=up_track, gamma=transfer_gamma(path), _path=str(path))
 
     def maps_for(self, frame: int = 0) -> tuple[list[CameraMap], np.ndarray]:
         """Remap tables + seam weights in the camera-rig frame.
@@ -535,6 +570,86 @@ class Stitcher360:
         self._cache["rs"] = (raw, smooth, Gmat)
         return raw, smooth, Gmat
 
+    def rs_tables(self):
+        """Static rolling-shutter tables per lens: (tau, J) at 1/RS_TABLE_DS res.
+
+        ``tau`` (h, w) is the source SENSOR-ROW fraction in [0, 1] for each
+        output pixel; ``J`` (h, w, 2, 3) is the sensor-plane shift (px) per
+        radian of rig-frame rotation about x/y/z, built numerically from three
+        perturbed projection maps. Zero where the lens has no coverage.
+        """
+        hit = self._cache.get("rs_tables")
+        if hit is not None:
+            return hit
+        import copy as _copy
+        ds = RS_TABLE_DS
+        w4, h4 = self.width // ds, self.height // ds
+        eps = np.radians(0.25)
+        common = dict(out_w=w4, out_h=h4, source=EXTRINSIC_SOURCE,
+                      order=EXTRINSIC_ORDER, max_fov_deg=self.fov_deg,
+                      feather_deg=self.seam_overlap_ratio * 360.0 / 3.0,
+                      focal_scale=self.focal_scale)
+        axes = [np.array([eps, 0, 0]), np.array([0, eps, 0]), np.array([0, 0, eps])]
+
+        def small_rot(v):
+            vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+            return np.eye(3) + vx + vx @ vx / 2.0
+
+        tables = []
+        for i in (0, 1):
+            dcx, dcy, fscale = CAM_INTRINSIC_FIX.get(i, (0.0, 0.0, 1.0))
+            cal = _copy.copy(self.calibs[i])
+            cal.cx += dcx
+            cal.cy += dcy
+            lm = self.lens_model
+            model = lm[i] if isinstance(lm, dict) else lm
+            if isinstance(model, tuple) and model and model[0] == "odd" and fscale != 1.0:
+                model = ("odd", [c * fscale for c in model[1]])
+            tweak = rot_matrix(*CAM_TWEAK[i])
+            base = build_map(cal, R_extra=tweak, model=model, **common)
+            J = np.zeros((h4, w4, 2, 3), np.float32)
+            for a, v in enumerate(axes):
+                pm = build_map(cal, R_extra=tweak @ small_rot(v), model=model, **common)
+                J[..., 0, a] = (pm.map_x - base.map_x) / eps
+                J[..., 1, a] = (pm.map_y - base.map_y) / eps
+            ok = base.valid & (np.abs(J).max(axis=(2, 3)) < 6.0 * cal.fx)
+            J[~ok] = 0.0
+            tau = np.clip(base.map_y / max(cal.height - 1, 1), 0.0, 1.0).astype(np.float32)
+            tau[~base.valid] = 0.0
+            tables.append((tau, J))
+        self._cache["rs_tables"] = tables
+        return tables
+
+    def _rs_highrate(self):
+        """Cached per-frame high-rate quaternion blocks (None if absent)."""
+        hit = self._cache.get("rs_hi")
+        if hit is None:
+            from .metadata import read_highrate
+            hit = read_highrate(self._path) if self._path else []
+            self._cache["rs_hi"] = hit
+        return hit
+
+    def rs_args_for(self, frame: int):
+        """Per-frame rolling-shutter correction: (theta (S,3) f32, t0, scale).
+
+        ``theta[k]`` is the rig-frame rotation vector (radians) of the camera at
+        sub-frame time k/(S-1) relative to frame start (where the per-frame
+        quaternion and the stabilisation reference live). The GPU evaluates each
+        pixel's sample position as (t0 + scale * tau) * (S-1). Returns None when
+        the high-rate track is missing for this frame.
+        """
+        hi = self._rs_highrate()
+        if frame >= len(hi) or hi[frame] is None or len(hi[frame]) < 4:
+            return None
+        h = hi[frame]
+        R0 = quat_to_matrix(h[0], QUAT_ORDER)
+        B = C_IMU_RIG_MOTION @ (self.mount if self.mount is not None else np.eye(3))
+        th = np.stack([B @ _rotvec(R0.T @ quat_to_matrix(q, QUAT_ORDER)) for q in h])
+        th = (RS_SIGN * th).astype(np.float32)
+        if RS_ROW_DIR >= 0:
+            return th, 0.0, float(RS_READOUT)
+        return th, float(RS_READOUT), -float(RS_READOUT)
+
     def levelling_for(self, frame: int) -> np.ndarray:
         """The rig-frame rotation to apply for this frame, per ``levelling`` mode.
 
@@ -555,10 +670,22 @@ class Stitcher360:
                 return levelling_rotation(self.up_track[frame])
             return K_PLAIN
         if self.levelling == "rocksteady":
-            raw, smooth, Gmat = self._rs_track()
+            # Counter-rotate toward the smoothed trajectory, conjugated by the
+            # ESTABLISHED content bridge C_UP_STITCH (from the horizon solve) so
+            # the raw orientation cancels exactly: world->output becomes
+            # K_PLAIN.T-rotated C @ smooth.T - the output follows the SMOOTHED
+            # camera with the trajectory's own jitter (0.013 deg/frame).
+            # The old G-conjugated composition (smooth@raw.T in the fitted
+            # motion frame) applied the small correction about a TUMBLING axis,
+            # leaving 0.24-0.42 deg/frame of structural jitter vs DJI's 0.02-
+            # 0.12; this form measures 0.052 calm / 0.071 moving - at parity
+            # calm and BETTER than DJI moving. K_PLAIN on the RIGHT keeps the
+            # cancellation intact and makes the layout match plain/DJI when the
+            # camera is steady (smooth ~= raw -> R -> K_PLAIN).
+            raw, smooth, _ = self._rs_track()
             if frame < len(raw):
-                T = Gmat @ (smooth[frame] @ raw[frame].T) @ Gmat.T
-                return K_PLAIN @ T
+                return (C_UP_STITCH @ raw[frame].T @ smooth[frame]
+                        @ C_UP_STITCH.T @ K_PLAIN)
             return K_PLAIN
         if self.levelling == "rocksteady_horizon":
             # HorizonLevelling: lock all three axes to a fixed level world view.

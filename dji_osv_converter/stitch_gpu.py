@@ -60,7 +60,8 @@ class GpuStitcher:
 
     def __init__(self, cams: list[CameraMap], band_px: float,
                  width: int, height: int, device: str | None = None,
-                 lsc_gain: list[np.ndarray] | None = None):
+                 lsc_gain: list[np.ndarray] | None = None,
+                 rs_tables=None):
         if torch is None:
             raise RuntimeError("torch is not installed")
         dev = pick_device(device)
@@ -120,6 +121,16 @@ class GpuStitcher:
             self.lsc_Y = [torch.from_numpy(np.ascontiguousarray(g))[None, None].to(self.dev)
                           for g in lsc_gain]
             self.lsc_UV = [F.avg_pool2d(g, 2) for g in self.lsc_Y]
+
+        # Rolling-shutter statics (pipeline.Stitcher360.rs_tables): per lens the
+        # source-row time fraction tau (h,w) and the sensor-shift Jacobian
+        # J (h,w,2,3) px/rad, at reduced res. None = RS correction off.
+        self.rs_tau = self.rs_J = None
+        if rs_tables is not None:
+            self.rs_tau = [torch.from_numpy(np.ascontiguousarray(t)).to(self.dev)
+                           for t, _ in rs_tables]
+            self.rs_J = [torch.from_numpy(np.ascontiguousarray(j)).to(self.dev)
+                         for _, j in rs_tables]
 
     # ---- stages (all operate on (1,3,H,W) float tensors on the device) ----
 
@@ -218,16 +229,40 @@ class GpuStitcher:
         V = t[fh + fh // 4:fh + fh // 2].reshape(1, 1, fh // 2, fw // 2)
         return Y, U, V
 
-    def _warp_planes(self, packed: np.ndarray, i: int):
+    def _rs_grids(self, i: int, rs_theta: "torch.Tensor", t0: float, scale: float):
+        """Rolling-shutter-adjusted warp grids for lens ``i``.
+
+        Each output pixel's ray was captured at sub-frame time t0 + scale*tau;
+        the linearised correction shifts its sensor sample by J @ theta(t).
+        """
+        th = rs_theta                                       # (S,3) radians
+        S = th.shape[0]
+        t = ((t0 + scale * self.rs_tau[i]).clamp(0, 1) * (S - 1))
+        i0 = t.floor().long().clamp(0, S - 2)
+        fr = (t - i0.float()).unsqueeze(-1)
+        thp = th[i0] * (1 - fr) + th[i0 + 1] * fr           # (h,w,3)
+        shift = torch.einsum("hwct,hwt->hwc", self.rs_J[i], thp)   # (h,w,2) px
+        shift = (shift * (2.0 / 3839.0)).permute(2, 0, 1).unsqueeze(0)  # normalized
+        sh_f = F.interpolate(shift, size=(self.H, self.W), mode="bilinear",
+                             align_corners=False).permute(0, 2, 3, 1)
+        sh_h = F.interpolate(shift, size=(self.H // 2, self.W // 2), mode="bilinear",
+                             align_corners=False).permute(0, 2, 3, 1)
+        return self.grid[i] + sh_f, self.grid_half[i] + sh_h
+
+    def _warp_planes(self, packed: np.ndarray, i: int, rs=None):
         """Warp one fisheye's YUV -> (Yw (1,1,H,W), UVw (1,2,H/2,W/2)).
 
-        Applies the factory lens-shading gain (devignette) if present, so the
-        vignetted rim is lifted before the blend and the seam stops reading dark.
+        Applies the factory lens-shading gain (devignette) if present, and the
+        rolling-shutter grid adjustment when ``rs`` = (theta, t0, scale) is
+        given (see pipeline.Stitcher360.rs_args_for).
         """
         Y, U, V = self._split_yuv(packed)
-        Yw = F.grid_sample(Y, self.grid[i], mode="bilinear",
+        gY, gUV = self.grid[i], self.grid_half[i]
+        if rs is not None and self.rs_tau is not None:
+            gY, gUV = self._rs_grids(i, *rs)
+        Yw = F.grid_sample(Y, gY, mode="bilinear",
                            align_corners=True, padding_mode="zeros")
-        UVw = F.grid_sample(torch.cat([U, V], 1), self.grid_half[i],
+        UVw = F.grid_sample(torch.cat([U, V], 1), gUV,
                             mode="bilinear", align_corners=True, padding_mode="zeros")
         if self.lsc_Y is not None:
             Yw = (Yw - 64.0) * self.lsc_Y[i] + 64.0
@@ -329,15 +364,21 @@ class GpuStitcher:
         return to(Yp), to(UVp)
 
     def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
-                   exposure: bool = True, wb: bool = False):
+                   exposure: bool = True, wb: bool = False, rs=None):
         """Stitch a 10-bit YUV fisheye pair -> p010le planes (Y, UV) for encode.
 
         ``wb=True`` uses the per-channel white-balance exposure match (matches the
         two lenses' colour, ~15ms/frame dearer); the default luma-only match is
-        the shipping path.
+        the shipping path. ``rs`` = (theta (S,3), t0, scale) enables per-pixel
+        rolling-shutter correction (pipeline.Stitcher360.rs_args_for).
         """
-        Ya, UVa = self._warp_planes(y0, 0)
-        Yb, UVb = self._warp_planes(y1, 1)
+        if rs is not None and self.rs_tau is not None:
+            th = torch.from_numpy(np.ascontiguousarray(rs[0])).to(self.dev)
+            rs = (th, rs[1], rs[2])
+        else:
+            rs = None
+        Ya, UVa = self._warp_planes(y0, 0, rs)
+        Yb, UVb = self._warp_planes(y1, 1, rs)
         if exposure:
             expose = self._expose_wb if wb else self._expose_luma
             Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)

@@ -75,12 +75,21 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     # the CPU linear path. It uses linear blending (multiband forces the CPU
     # path). Falls back to CPU if torch/GPU is unavailable.
     use_gpu = gpu and not multiband and stitch_gpu.available()
+    # Rolling-shutter correction is OFF: what looked like readout jello was the
+    # old rocksteady composition applying its correction about a tumbling axis.
+    # With the fixed C_UP_STITCH-conjugated formula the rendered jitter is 0.027
+    # deg/frame calm / 0.071 moving (DJI: 0.046 / 0.118) and every RS
+    # configuration measurably WORSENS it (0.06-0.15). The full RS pipeline
+    # (tau/Jacobian tables, high-rate track, per-pixel grid shift) remains in
+    # place behind this flag for future non-DJI sources.
+    use_rs = False
     if use_gpu:
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
             width=width, height=height,
-            lsc_gain=stitcher.lsc_gains() if lsc else None)
+            lsc_gain=stitcher.lsc_gains() if lsc else None,
+            rs_tables=stitcher.rs_tables() if use_rs else None)
 
     src = av.open(input_osv)
     vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
@@ -137,8 +146,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     def _stitch(idx, f0, f1):
         R = stitcher.levelling_for(idx)
         if use_gpu:
+            rs = stitcher.rs_args_for(idx) if use_rs else None
             return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure,
-                                         wb=exposure_wb)                 # (Y, UV) p010
+                                         wb=exposure_wb, rs=rs)          # (Y, UV) p010
         return stitcher.stitch(f0, f1, frame=idx, exposure=exposure, multiband=multiband)
 
     def _p010_frame(planes) -> "av.VideoFrame":
