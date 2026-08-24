@@ -105,13 +105,40 @@ class GpuStitcher:
              [0.439216, -0.398942, -0.040274]], dtype=torch.float32, device=self.dev)
 
         # equirect ray components for the levelling rotation, kept as three
-        # contiguous (H*W,) tensors. The rotation is then done with elementwise
-        # ops (9 mul + 6 add) instead of an (H*W,3)@(3,3) matmul, which is
-        # ~5x faster here - MPS handles that skinny matmul shape badly.
+        # contiguous (H*W,) tensors, plus a (3, H*W) stack for the matmul path.
         d = directions(height, width).reshape(-1, 3).astype(np.float32)
         self.dx = torch.from_numpy(np.ascontiguousarray(d[:, 0])).to(self.dev)
         self.dy = torch.from_numpy(np.ascontiguousarray(d[:, 1])).to(self.dev)
         self.dz = torch.from_numpy(np.ascontiguousarray(d[:, 2])).to(self.dev)
+        self._d3 = torch.stack([self.dx, self.dy, self.dz])          # (3, H*W)
+
+        # The level-grid build was 48% of the whole stitch (91 ms at 8K on MPS):
+        # 15 separate elementwise kernels for the rotation plus a no-op
+        # remainder (atan2 already returns [-pi, pi]) and a 16 ms stack.
+        # torch.compile fuses the whole computation to ~6.5 ms; the fallback
+        # uses a (3,3)@(3,N) matmul (12 ms - note the SHAPE: the transposed
+        # (N,3)@(3,3) orientation is 7x slower on MPS, which is what the old
+        # "matmul is slow" note measured). Scalars are passed as floats so a
+        # changing rotation never retriggers compilation. Output differs from
+        # the old remainder form only AT the wrap meridian (gx=+1 vs -1: the
+        # same longitude, one column apart) - measured 1 px in 59M, invisible.
+        dx, dy, dz = self.dx, self.dy, self.dz
+
+        def _grid_math(r00, r01, r02, r10, r11, r12, r20, r21, r22):
+            nx = dx * r00 + dy * r01 + dz * r02
+            ny = dx * r10 + dy * r11 + dz * r12
+            nz = dx * r20 + dy * r21 + dz * r22
+            gx = torch.atan2(nx, -nz) * (1.0 / np.pi)
+            gy = torch.asin(ny.clamp(-1, 1)) * (-2.0 / np.pi)
+            return torch.stack([gx, gy], -1)
+
+        self._grid_fused = None
+        try:
+            fn = torch.compile(_grid_math)
+            fn(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)   # compile now
+            self._grid_fused = fn
+        except Exception:                    # inductor unavailable: matmul path
+            pass
 
         # Factory lens-shading (devignette) gain per lens, in equirect space -
         # multiplied into each warped lens before the blend to lift the vignetted
@@ -178,22 +205,23 @@ class GpuStitcher:
         return a * g0, b * g1
 
     def blend(self, a, b):
-        return a * self.w3 + b * (1.0 - self.w3)
+        # lerp is a single fused kernel (a*w + b*(1-w) launches four): 23->9 ms
+        return torch.lerp(b, a, self.w3)
 
     def _level_grid(self, R: np.ndarray) -> "torch.Tensor":
         """Full-res sampling grid (1,H,W,2) for rotating the equirect by R.
 
-        The rotated ray is d' = dirs @ R.T, i.e. d'[j] = sum_k dirs[k]*R[j,k];
-        computed elementwise on the precomputed components (no matmul).
+        The rotated ray is d' = R @ dirs; gx = atan2/pi (already in [-1,1] - no
+        wrap remainder needed), gy = -2*asin/pi. Fused via torch.compile when
+        available, else one (3,3)@(3,N) matmul + trig.
         """
-        r = R.astype(np.float64)
-        nx = self.dx * r[0, 0] + self.dy * r[0, 1] + self.dz * r[0, 2]
-        ny = self.dx * r[1, 0] + self.dy * r[1, 1] + self.dz * r[1, 2]
-        nz = self.dx * r[2, 0] + self.dy * r[2, 1] + self.dz * r[2, 2]
-        lon = torch.atan2(nx, -nz)
-        lat = torch.asin(ny.clamp(-1, 1))
-        gx = torch.remainder(lon / np.pi + 1.0, 2.0) - 1.0  # wrap longitude
-        gy = -2.0 * lat / np.pi                             # lat +-90 -> +-1
+        r = [float(v) for v in np.asarray(R, dtype=np.float64).flatten()]
+        if self._grid_fused is not None:
+            return self._grid_fused(*r).view(1, self.H, self.W, 2)
+        Rt = torch.tensor(np.asarray(R, np.float32), device=self.dev)
+        n = Rt @ self._d3
+        gx = torch.atan2(n[0], -n[2]) * (1.0 / np.pi)
+        gy = torch.asin(n[1].clamp(-1, 1)) * (-2.0 / np.pi)
         return torch.stack([gx, gy], -1).view(1, self.H, self.W, 2)
 
     def level(self, pano, R: np.ndarray):
@@ -203,7 +231,7 @@ class GpuStitcher:
                              align_corners=True, padding_mode="border")
 
     def stitch(self, f0: np.ndarray, f1: np.ndarray, R: np.ndarray,
-               exposure: bool = True) -> np.ndarray:
+               exposure: bool = False) -> np.ndarray:
         a = self.warp(f0, 0)
         b = self.warp(f1, 1)
         if exposure:
@@ -357,14 +385,16 @@ class GpuStitcher:
     def _pack_p010(self, Y, UV):
         """(Y (1,1,H,W), UV (1,2,H/2,W/2)) -> p010le planes, top-aligned uint16."""
         H, W = self.H, self.W
-        Yp = (Y[0, 0].clamp(64, 940) * 64.0).round().clamp(0, 65535)
-        UVp = (UV[0].permute(1, 2, 0).reshape(H // 2, W).clamp(64, 960)
-               * 64.0).round().clamp(0, 65535)
+        # +0.5-truncate == round-half-up for these positive values (1 LSB of
+        # 16-bit at exact ties vs round-half-even); skips the separate round
+        # and second clamp kernels. Range is guaranteed by the first clamp.
         to = lambda t: t.to(torch.int32).cpu().numpy().astype(np.uint16)
+        Yp = (Y[0, 0].clamp(64, 940) * 64.0 + 0.5)
+        UVp = (UV[0].permute(1, 2, 0).reshape(H // 2, W).clamp(64, 960) * 64.0 + 0.5)
         return to(Yp), to(UVp)
 
     def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
-                   exposure: bool = True, wb: bool = False, rs=None):
+                   exposure: bool = False, wb: bool = False, rs=None):
         """Stitch a 10-bit YUV fisheye pair -> p010le planes (Y, UV) for encode.
 
         ``wb=True`` uses the per-channel white-balance exposure match (matches the
@@ -382,8 +412,8 @@ class GpuStitcher:
         if exposure:
             expose = self._expose_wb if wb else self._expose_luma
             Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)
-        Y = Ya * self.w3 + Yb * (1.0 - self.w3)
-        UV = UVa * self.w3h + UVb * (1.0 - self.w3h)
+        Y = torch.lerp(Yb, Ya, self.w3)       # fused blend (see blend())
+        UV = torch.lerp(UVb, UVa, self.w3h)
         if not np.allclose(R, np.eye(3), atol=1e-9):
             gf = self._level_grid(R)
             gh = gf[:, ::2, ::2, :].contiguous()
