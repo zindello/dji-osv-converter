@@ -394,7 +394,7 @@ class Stitcher360:
     lens_model: object = LENS_MODEL
     focal_scale: float = FOCAL_SCALE
     mount: np.ndarray | None = None   # camera<->IMU rotation (header 1.3.1)
-    # "plain" (raw, match DJI) | "horizon" | "rocksteady" | "none"
+    # "plain" | "rocksteady" | "rocksteady_horizon" | "horizon" | "none"
     levelling: str = "plain"
     level_smooth_half: int = LEVEL_SMOOTH_HALF
     rs_sigma: float = RS_SIGMA         # RockSteady trajectory-smoother sigma (frames)
@@ -513,6 +513,16 @@ class Stitcher360:
             if frame < len(raw):
                 T = Gmat @ (smooth[frame] @ raw[frame].T) @ Gmat.T
                 return K_PLAIN @ T
+            return K_PLAIN
+        if self.levelling == "rocksteady_horizon":
+            # HorizonLevelling (always with RockSteady): lock ALL THREE axes to a
+            # fixed, gravity-aligned world orientation - the view holds still and
+            # the horizon stays dead level while the camera tumbles. Same as
+            # rocksteady but with the reference frame set to identity (the
+            # quaternion world frame) instead of the smoothed trajectory.
+            raw, smooth, Gmat = self._rs_track()
+            if frame < len(raw):
+                return K_PLAIN @ Gmat @ raw[frame].T @ Gmat.T
             return K_PLAIN
         return K_PLAIN   # "plain"
 
