@@ -43,7 +43,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             codec: str = "hevc_videotoolbox", bit10: bool = True,
             bitrate: int | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = True,
-            exposure_wb: bool = False,
+            exposure_wb: bool = False, levelling: str = "plain",
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
@@ -59,7 +59,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     quality on stills.
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
-    stitcher = Stitcher360.from_file(input_osv, width=width, height=height)
+    stitcher = Stitcher360.from_file(input_osv, width=width, height=height,
+                                     levelling=levelling)
 
     # The GPU (CUDA or Apple MPS) runs the whole stitch on-device - several x
     # the CPU linear path. It uses linear blending (multiband forces the CPU

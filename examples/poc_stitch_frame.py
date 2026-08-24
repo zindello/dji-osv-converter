@@ -35,7 +35,7 @@ from dji_osv_converter.osv_calibration import _parse_block, _descend, parse_moun
 # --- geometry / blend ---
 from dji_osv_converter.project import build_map
 from dji_osv_converter.stitcher import warp, match_exposure, multiband_blend, seam_weights
-from dji_osv_converter.pipeline import levelling_rotation
+from dji_osv_converter.pipeline import K_PLAIN
 # --- pixels: libavcodec in-process (the one codec dependency) ---
 from dji_osv_converter.decode import OSVDecoder
 
@@ -98,13 +98,12 @@ def main():
         raise SystemExit("no CAM meta track - not a DJI 360 OSV?")
     header = container.sample_bytes(meta, 0)
     cams = read_calibration(header)
-    gravity = read_gravity(container, meta, frame)
-    mount = parse_mount_rotation(header)   # camera<->IMU skew, header field 1.3.1
     print(f"calibration: fx={cams[0].fx:.1f}/{cams[1].fx:.1f}  "
           f"5 radial + 2 tangential terms per lens")
-    R = levelling_rotation(gravity, mount) if gravity is not None else np.eye(3)
-    print(f"gravity {np.round(gravity, 3) if gravity is not None else None} "
-          f"+ mount {'(1.3.1)' if mount is not None else 'absent'} -> horizon levelled")
+    # Match DJI's default "plain" export: raw optics, follows the camera - a
+    # constant layout rotation, no IMU (see pipeline.K_PLAIN).
+    R = K_PLAIN
+    print("levelling: plain (raw, matches DJI default export)")
 
     # 3: pixels, libavcodec
     with OSVDecoder(osv) as dec:

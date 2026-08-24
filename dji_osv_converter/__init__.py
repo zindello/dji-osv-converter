@@ -45,7 +45,7 @@ from .osv_mp4 import OSVContainer, Track
 from .decode import OSVDecoder, read_pair
 from .metadata import OSVMeta, read_metadata
 from .project import build_map
-from .pipeline import Stitcher360, levelling_rotation, mount_skew, smooth_gravity
+from .pipeline import Stitcher360, levelling_rotation, up_track_from_meta
 from .video import convert
 from .spherical import inject_spherical
 from .stitcher import (
@@ -77,8 +77,7 @@ __all__ = [
     # geometry / blending
     "build_map",
     "levelling_rotation",
-    "mount_skew",
-    "smooth_gravity",
+    "up_track_from_meta",
     "warp",
     "blend",
     "flow_blend",

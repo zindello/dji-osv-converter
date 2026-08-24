@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 from .calibration import CameraMap
-from .metadata import OSVMeta, read_metadata
+from .metadata import OSVMeta, read_metadata, quat_to_matrix
 from .orientation import rot_matrix, rotate_equirect
 from .osv_calibration import CameraCalib, read_osv_calibration, read_mount_rotation
 from .project import build_map
@@ -145,67 +145,116 @@ def _rot_x(deg: float) -> np.ndarray:
     return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
 
 
-# The equirectangular sphere laid out by directions() sits Rx(-90) from the
-# frame DJI's calibration (and the mount rotation, header 1.3.1) is expressed
-# in. Verified: the rotation between our no-levelling stitch and DJI's raw
-# ("plain") export is 90.8 deg about X, i.e. a clean Rx(-90) - the empirical
-# value gives identical results, so this is our own convention, not a tuned
-# constant. The mount is conjugated by it to act in our frame.
-EQUIRECT_CONVENTION = _rot_x(-90.0)
+# ---- Horizon levelling from the IMU orientation quaternion ------------------
+#
+# The OSV carries a per-frame device-orientation quaternion (metadata field
+# 3.2.9) - DJI's own IMU sensor-fusion output - alongside the raw accelerometer
+# "gravity" vector (3.2.10). We level from the QUATERNION, not the accelerometer:
+# under handheld motion the accelerometer carries several degrees of
+# translational acceleration, and that noise was the visible horizon bow.
+# Validated against DJI's own "plain" export (which uses only its default
+# levelling): the accelerometer path sat 6-15 deg off DJI's horizon; the
+# smoothed-quaternion path below matches it to <1.3 deg across ten test frames -
+# the feature-matching measurement floor. See tools/ for the harness.
+#
+# The chain, all derived from the OSV:
+#   up_imu(f) = R(quat_f).T @ WORLD_UP           world-up in the IMU frame
+#   up_imu    = moving-average over +-LEVEL_SMOOTH_HALF frames   (DJI smooths the
+#               horizon; the raw per-frame quaternion jitters ~1-2 deg about it)
+#   up_rig(f) = C_IMU_RIG @ mount @ up_imu(f)     mapped into our equirect frame
+#   level(f)  = align_vectors(up_rig(f), +Y)      yaw-free horizon levelling
+#
+# WORLD_UP is +Z: R(quat) @ accelerometer lands on -Z, so world-up is +Z.
+# ``mount`` (header 1.3.1) is the PER-UNIT camera<->IMU skew (magnetic mount,
+# ~13 deg on this unit) - read from each OSV so it adapts per unit. C_IMU_RIG is
+# the fixed FORMAT convention relating the IMU world axes to our equirect layout;
+# it was recovered once as C = B @ mount^-1 from the DJI reference (B being the
+# fitted IMU->rig up-vector map), so B = C_IMU_RIG @ mount reproduces it exactly.
+# DJI's "plain" export is the RAW optical stitch - no levelling, no
+# stabilisation: it flips and rolls with the camera. Verified on a deliberate
+# pitch/roll clip - the rotation between our no-levelling rig stitch and DJI's
+# plain export stays constant (~90 deg, spread <2 deg) through the whole tumble.
+# So matching "plain" needs only this one constant K - NO IMU, NO mount, NO
+# gravity. K is almost exactly Rx(90 deg): it is our equirect layout convention
+# (how directions() lays out the sphere) versus DJI's, plus a ~1.6 deg residual
+# measured against DJI's export. It is NOT in the OSV and does not need to be -
+# plain is raw optics and this is purely a rendering-layout convention.
+# Measured over pitch_roll_plain.mp4; validated to ~3 deg (stitch-level, not
+# orientation) across extreme-tilt frames. Universal across units.
+def _orthonormal(M: np.ndarray) -> np.ndarray:
+    U, _, Vt = np.linalg.svd(np.asarray(M, dtype=np.float64))
+    R = U @ Vt
+    return R if np.linalg.det(R) > 0 else U @ np.diag([1, 1, -1]) @ Vt
 
 
-def mount_skew(mount: np.ndarray) -> np.ndarray:
-    """Mount rotation (header 1.3.1) expressed in our equirect convention.
+K_PLAIN = _orthonormal([
+    [0.999620, 0.000390, 0.027440],
+    [0.027440, 0.003060, -0.999620],
+    [-0.000480, 1.000000, 0.003050],
+])
 
-    ``C @ mount @ C.T`` where ``C = EQUIRECT_CONVENTION``: a change of basis
-    that re-expresses DJI's camera<->IMU rotation in the frame our gravity
-    vector and stitch live in.
+QUAT_ORDER = "wxyz"
+WORLD_UP = np.array([0.0, 0.0, 1.0])
+C_IMU_RIG = np.array([
+    [0.360809, -0.904583, -0.227040],
+    [-0.904352, -0.398841, 0.151896],
+    [-0.227955, 0.150519, -0.961967],
+])
+LEVEL_SMOOTH_HALF = 20   # boxcar half-window (frames) over the up-vector track
+
+
+def device_up_track(quats: np.ndarray, order: str = QUAT_ORDER) -> np.ndarray:
+    """World-up expressed in the IMU frame per frame: ``R(quat).T @ WORLD_UP``.
+
+    Rows for missing / non-unit quaternions are NaN so they drop out of the
+    moving average rather than shifting every later frame.
     """
-    C = EQUIRECT_CONVENTION
-    return C @ np.asarray(mount, dtype=np.float64) @ C.T
-
-
-def levelling_rotation(gravity: np.ndarray,
-                       mount: np.ndarray | None = None) -> np.ndarray:
-    """World->rig rotation placing the horizon level, from a gravity sample.
-
-    ``mount`` is the optional camera<->IMU mount rotation from
-    :func:`osv_calibration.read_mount_rotation` (OSV header field 1.3.1). The
-    accelerometer measures "down" in the IMU frame, which sits at a fixed skew
-    from the optical frame (the magnetic-mount offset, ~13 deg); supplying the
-    mount corrects for it and is what makes the horizon truly level. Omit it
-    and the horizon carries that constant tilt.
-
-    Yaw is left free: gravity constrains only two of three degrees of freedom,
-    and there is no physically preferred heading for a 360.
-    """
-    g = np.asarray(gravity, dtype=np.float64)
-    n = np.linalg.norm(g)
-    if n < 1e-6:
-        return np.eye(3)
-    g = g / n
-    if mount is not None:
-        g = mount_skew(mount) @ g
-    return align_vectors([0.0, -1.0, 0.0], g)
-
-
-def smooth_gravity(grav: np.ndarray, window: int = 15) -> np.ndarray:
-    """Moving-average the gravity track.
-
-    Raw accelerometer samples contain handheld motion as well as gravity
-    (observed |g| ranging 0.84-1.28), which would make the horizon jitter.
-    """
-    if len(grav) < 3 or window < 2:
-        return grav
-    window = min(window, len(grav))
-    k = np.ones(window) / window
-    out = np.stack([np.convolve(grav[:, i], k, mode="same") for i in range(3)], axis=1)
-    # convolve tapers at the edges; restore ends to raw values
-    half = min(window // 2, len(grav) // 2)
-    if half:
-        out[:half] = grav[:half]
-        out[-half:] = grav[-half:]
+    out = np.full((len(quats), 3), np.nan)
+    for i, q in enumerate(quats):
+        if np.isfinite(q).all() and abs(np.linalg.norm(q) - 1.0) < 1e-2:
+            out[i] = quat_to_matrix(q, order).T @ WORLD_UP
     return out
+
+
+def smooth_unit_track(vecs: np.ndarray, half: int) -> np.ndarray:
+    """Centred moving-average of a unit-vector track, renormalised (NaN-safe).
+
+    This is the ring-buffer DJI appears to run on the horizon: the raw per-frame
+    IMU up-vector jitters ~1-2 deg, and averaging it over a short window holds
+    the horizon steady. Centred (non-causal) - fine for offline conversion,
+    which has the whole track.
+    """
+    N = len(vecs)
+    out = np.full_like(vecs, np.nan, dtype=np.float64)
+    finite = np.isfinite(vecs).all(1)
+    if half < 1:
+        return vecs.copy()
+    for i in range(N):
+        lo, hi = max(0, i - half), min(N, i + half + 1)
+        seg = vecs[lo:hi][finite[lo:hi]]
+        if len(seg):
+            v = seg.mean(0)
+            n = np.linalg.norm(v)
+            if n > 1e-9:
+                out[i] = v / n
+    return out
+
+
+def up_track_from_meta(quats: np.ndarray, mount: np.ndarray | None,
+                       half: int = LEVEL_SMOOTH_HALF) -> np.ndarray:
+    """Smoothed world-up in the rig frame, per frame (the levelling up-vector)."""
+    B = C_IMU_RIG @ (np.asarray(mount, dtype=np.float64)
+                     if mount is not None else np.eye(3))
+    up_imu = smooth_unit_track(device_up_track(quats), half)   # smooth in IMU frame
+    return up_imu @ B.T                                        # rows: B @ up_imu
+
+
+def levelling_rotation(up_rig: np.ndarray) -> np.ndarray:
+    """Yaw-free horizon-levelling rotation from a rig-frame world-up vector."""
+    n = np.asarray(up_rig, dtype=np.float64)
+    if not np.isfinite(n).all() or np.linalg.norm(n) < 1e-6:
+        return np.eye(3)
+    return align_vectors(n / np.linalg.norm(n), [0.0, 1.0, 0.0])
 
 
 @dataclass
@@ -221,24 +270,32 @@ class Stitcher360:
     lens_model: object = LENS_MODEL
     focal_scale: float = FOCAL_SCALE
     mount: np.ndarray | None = None   # camera<->IMU rotation (header 1.3.1)
+    levelling: str = "plain"          # "plain" (raw, match DJI) | "horizon" | "none"
+    level_smooth_half: int = LEVEL_SMOOTH_HALF
+    up_track: np.ndarray | None = None   # smoothed rig-frame world-up, per frame
     _cache: dict = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_file(cls, path: str | Path, width: int = 7680, height: int = 3840,
-                  fov_deg: float | None = None,
+                  fov_deg: float | None = None, levelling: str = "plain",
+                  level_smooth_half: int = LEVEL_SMOOTH_HALF,
                   max_frames: int | None = None) -> "Stitcher360":
         calibs = read_osv_calibration(path)
         meta = read_metadata(path, max_frames=max_frames)
-        meta.gravity = smooth_gravity(meta.gravity)
         mount = read_mount_rotation(path)
+        # Horizon levelling comes from the per-frame IMU orientation quaternion,
+        # smoothed and mapped into the rig frame (see the levelling notes above).
+        up_track = up_track_from_meta(meta.quats, mount, level_smooth_half)
         # FOV and blend band both derive from DJI's shipped seam_overlap_ratio.
         ratio = _read_seam_overlap_ratio()
         fov = _fov_from_overlap(ratio) if fov_deg is None else fov_deg
-        logger.info("%s: %s, serial %s, %d samples; seam_overlap %.4f -> FOV %.2f deg; "
+        logger.info("%s: %s, serial %s, %d frames; seam_overlap %.4f -> FOV %.2f deg; "
                     "mount %s", Path(path).name, meta.model, meta.serial,
-                    len(meta.gravity), ratio, fov,
+                    len(meta.quats), ratio, fov,
                     "present (1.3.1)" if mount is not None else "absent")
-        return cls(calibs, meta, width, height, fov, ratio, mount=mount)
+        return cls(calibs, meta, width, height, fov, ratio, mount=mount,
+                   levelling=levelling, level_smooth_half=level_smooth_half,
+                   up_track=up_track)
 
     def maps_for(self, frame: int = 0) -> tuple[list[CameraMap], np.ndarray]:
         """Remap tables + seam weights in the camera-rig frame.
@@ -282,10 +339,20 @@ class Stitcher360:
         return maps, weights
 
     def levelling_for(self, frame: int) -> np.ndarray:
-        """The world->rig levelling rotation for a frame (gravity + mount)."""
-        if frame < len(self.meta.gravity):
-            return levelling_rotation(self.meta.gravity[frame], self.mount)
-        return np.eye(3)
+        """The rig-frame rotation to apply for this frame, per ``levelling`` mode.
+
+        ``plain`` (default): the constant layout convention ``K_PLAIN`` - matches
+        DJI's raw, unlevelled export (the image follows the camera). ``horizon``:
+        the smoothed IMU-quaternion leveller, holding the horizon flat. ``none``:
+        identity (our raw rig frame, ~90 deg off DJI's layout).
+        """
+        if self.levelling == "none":
+            return np.eye(3)
+        if self.levelling == "horizon":
+            if self.up_track is not None and frame < len(self.up_track):
+                return levelling_rotation(self.up_track[frame])
+            return K_PLAIN
+        return K_PLAIN   # "plain"
 
     def stitch_rig(self, fisheye0: np.ndarray, fisheye1: np.ndarray,
                    flow: bool = False, exposure: bool = True,
@@ -340,8 +407,10 @@ class Stitcher360:
 __all__ = [
     "Stitcher360",
     "levelling_rotation",
-    "mount_skew",
-    "EQUIRECT_CONVENTION",
+    "up_track_from_meta",
+    "device_up_track",
+    "smooth_unit_track",
+    "K_PLAIN",
+    "C_IMU_RIG",
     "align_vectors",
-    "smooth_gravity",
 ]
