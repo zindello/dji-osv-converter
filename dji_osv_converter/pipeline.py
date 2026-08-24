@@ -526,23 +526,18 @@ class Stitcher360:
                 return K_PLAIN @ T
             return K_PLAIN
         if self.levelling == "rocksteady_horizon":
-            # HorizonLevelling (always with RockSteady): lock ALL THREE axes to a
-            # fixed, gravity-aligned world orientation - the view holds still and
-            # the horizon stays dead level while the camera tumbles.
-            #   R(f) = B_hz @ R(quat_f).T @ Rx(90)
-            # Rx(90) maps world-up +Z to image-up +Y (the fixed convention that
-            # makes it a true lock, not just a per-frame up-align).
-            # B_hz = extrinsic(cam0).T @ mount is the IMU->rig basis from the OSV
-            # CALIBRATION (camera-0 extrinsic + header-1.3.1 mount), NOT the
-            # motion-fit convention: it carries the correct absolute up, so the
-            # full per-frame orientation inverts to a level lock even through a
-            # fast tumble. (The motion-fit C_IMU_RIG_MOTION has a wrong absolute
-            # up - fine for rocksteady's tiny corrections, but a large-tilt lock
-            # exposes it as gross tilt.)
-            q = self.meta.quats
-            if frame < len(q) and np.isfinite(q[frame]).all():
-                return (self._hz_basis() @ quat_to_matrix(q[frame], QUAT_ORDER).T
-                        @ _rot_x(90.0))
+            # HorizonLevelling (always with RockSteady) is NOT SOLVED yet - it
+            # must lock pitch, yaw AND roll to a fixed level world orientation
+            # through a tumble. Every attempt so far TRACKS the camera instead of
+            # locking (verified against DJI's export over 6 frames, not cherry-
+            # picked - do that every time).
+            # What IS established: level(R) rotates content by R.T (controlled
+            # test). The lock is R = A @ R(quat).T @ B for constants A,B, and it
+            # locks only if A = extrinsic(cam0).T @ const_c, where const_c is the
+            # content<->quaternion conjugation - the SAME relationship the
+            # rocksteady G fit captures. Approximate A (motion-fit up / bare
+            # extrinsic+mount) drifts; the exact one is the open problem.
+            # Falls through to plain so it never ships a broken lock.
             return K_PLAIN
         return K_PLAIN   # "plain"
 
