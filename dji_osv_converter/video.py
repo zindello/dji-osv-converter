@@ -85,10 +85,19 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     vs.pix_fmt = _pick_pix_fmt(codec, bit10)
     vs.time_base = Fraction(1, fps.numerator // fps.denominator if fps.denominator == 1
                             else int(round(float(fps))))
+    # Tag HEVC as hvc1 (parameter sets in the sample description) rather than the
+    # libav default hev1 (in-band): macOS QuickLook/Finder/QuickTime only decode
+    # hvc1, so hev1 gives no thumbnail and won't play there. DJI uses hvc1.
+    if "hevc" in codec or "h265" in codec:
+        try:
+            vs.codec_tag = "hvc1"
+        except (AttributeError, ValueError):
+            vs.codec_context.codec_tag = int.from_bytes(b"hvc1", "little")
     if bitrate:
         vs.bit_rate = bitrate
     elif "videotoolbox" in codec:
-        vs.bit_rate = int(width * height * float(fps) * 0.10)  # ~0.1 bpp
+        # ~0.25 bpp - matches DJI's ~0.28 bpp for 8K; 0.10 was too soft.
+        vs.bit_rate = int(width * height * float(fps) * 0.25)
     else:
         vs.options = {"crf": "18"}
 
