@@ -35,10 +35,17 @@ def main() -> int:
     ap.add_argument("--multiband", dest="multiband", action="store_true",
                     help="multi-band seam blend (default: linear - identical after "
                          "exposure match, ~1s/frame faster)")
+    ap.add_argument("--exposure", dest="exposure", action="store_true",
+                    help="inter-lens exposure match (default OFF: the OSV is already "
+                         "exposure-matched in-camera, so matching again paints an arc "
+                         "across the sky - only enable for non-ISP'd footage)")
+    ap.add_argument("--lsc", dest="lsc", action="store_true",
+                    help="factory lens-shading (devignette) correction (default OFF: "
+                         "the OSV is already devignetted in-camera; re-applying the "
+                         "factory curve over-brightens the seam - only for raw footage)")
     ap.add_argument("--exposure-wb", dest="exposure_wb", action="store_true",
-                    help="per-channel white-balance exposure match between the two "
-                         "lenses (default: luma-only; ~15ms/frame dearer, helps in "
-                         "mixed/coloured lighting)")
+                    help="if --exposure is on, use per-channel white-balance matching "
+                         "instead of luma-only (~15ms/frame dearer)")
     ap.add_argument("--levelling",
                     choices=("plain", "rocksteady", "rocksteady_horizon", "horizon", "none"),
                     default="plain",
@@ -65,7 +72,8 @@ def main() -> int:
     out = convert(args.input, args.output, width=args.width, height=args.height,
                   start=args.start, count=args.count, codec=args.codec,
                   bitrate=args.bitrate, bit10=args.bit10, audio=args.audio,
-                  multiband=args.multiband, exposure_wb=args.exposure_wb,
+                  multiband=args.multiband, exposure=args.exposure,
+                  exposure_wb=args.exposure_wb, lsc=args.lsc,
                   levelling=args.levelling, hardware=args.hardware, gpu=args.gpu,
                   pipeline=args.pipeline, spherical=True, progress=progress)
     dt = time.time() - t

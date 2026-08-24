@@ -42,8 +42,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             start: int = 0, count: int | None = None,
             codec: str = "hevc_videotoolbox", bit10: bool = True,
             bitrate: int | None = None,
-            hardware: bool = True, multiband: bool = False, exposure: bool = True,
-            exposure_wb: bool = False, levelling: str = "plain",
+            hardware: bool = True, multiband: bool = False, exposure: bool = False,
+            exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
@@ -53,10 +53,19 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     "libx265", "hevc_nvenc", ...). ``progress(done, total)`` is called per
     frame if given.
 
-    ``multiband`` defaults off for video: after the exposure match the linear
-    feathered blend is visually indistinguishable from multi-band (peak diff
-    ~1/255) and ~1s/frame cheaper. Turn it on for the last ounce of seam
-    quality on stills.
+    ``exposure`` (inter-lens exposure match) and ``lsc`` (factory devignette)
+    both default OFF: the OSV fisheyes are already ISP-processed in-camera
+    (devignetted AND exposure-matched), so applying our own corrections on top
+    DOUBLE-corrects and paints a bright/dark arc across the overlap band -
+    clearly visible against sky, absent from DJI's own export. Measured: the
+    true delivered vignette is ~flat (0-8%) vs the factory curve's 24%, and the
+    exposure match pushes the inter-lens sky step from +1.6 to +28 (10-bit).
+    Leaving both off matches DJI and also drops ~60 ms/frame. Re-enable only for
+    footage that is NOT already ISP-corrected (a different camera/source).
+
+    ``multiband`` defaults off for video: the linear feathered blend is visually
+    indistinguishable from multi-band on this (aligned, ISP-matched) footage and
+    ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     stitcher = Stitcher360.from_file(input_osv, width=width, height=height,
@@ -70,7 +79,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
-            width=width, height=height, lsc_gain=stitcher.lsc_gains())
+            width=width, height=height,
+            lsc_gain=stitcher.lsc_gains() if lsc else None)
 
     src = av.open(input_osv)
     vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
