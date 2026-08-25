@@ -49,6 +49,9 @@
                                 <a class="variable" href="#GpuStitcher.input_p010">input_p010</a>
                         </li>
                         <li>
+                                <a class="variable" href="#GpuStitcher.input_cuda">input_cuda</a>
+                        </li>
+                        <li>
                                 <a class="variable" href="#GpuStitcher.grid">grid</a>
                         </li>
                         <li>
@@ -74,6 +77,9 @@
                         </li>
                         <li>
                                 <a class="variable" href="#GpuStitcher.async_d2h">async_d2h</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#GpuStitcher.input_pool">input_pool</a>
                         </li>
                         <li>
                                 <a class="function" href="#GpuStitcher.stitch_yuv_async">stitch_yuv_async</a>
@@ -196,6 +202,17 @@ device changes. Construct only when <code><a href="#available">available()</a></
     
 
                             </div>
+                            <div id="GpuStitcher.input_cuda" class="classattr">
+                                <div class="attr variable">
+            <span class="name">input_cuda</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.input_cuda"></a>
+    
+    
+
+                            </div>
                             <div id="GpuStitcher.grid" class="classattr">
                                 <div class="attr variable">
             <span class="name">grid</span>
@@ -306,6 +323,23 @@ rolling-shutter correction (pipeline.Stitcher360.rs_args_for).</p>
     <a class="headerlink" href="#GpuStitcher.async_d2h"></a>
     
             <div class="docstring"><p>True when <code><a href="#GpuStitcher.stitch_yuv_async">stitch_yuv_async</a></code> is available (CUDA + uint16 cast).</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.input_pool" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">input_pool</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">slots</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">16</span></span><span class="return-annotation">) -> <span class="n">dji_osv_converter</span><span class="o">.</span><span class="n">stitch_gpu</span><span class="o">.</span><span class="n">PinnedInputPool</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.input_pool"></a>
+    
+            <div class="docstring"><p>A pinned staging pool for the decoder to fill (CUDA p010 path only).</p>
+
+<p>Pass its <code>alloc</code> to <code>iter_pairs</code>; None where it wouldn't help.</p>
 </div>
 
 

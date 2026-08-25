@@ -52,6 +52,45 @@ def _sync(device) -> None:
         torch.mps.synchronize()
 
 
+class _PinnedSlot:
+    """One pinned staging buffer for a p010 fisheye (Y + interleaved UV).
+
+    ``Y``/``UV`` are numpy views the decode worker fills; ``event`` fences
+    reuse (recorded after the slot's H2D copy is queued, waited by alloc).
+    """
+
+    def __init__(self, fh: int, fw: int):
+        self.tY = torch.empty((fh, fw), dtype=torch.uint16).pin_memory()
+        self.tUV = torch.empty((fh // 2, fw), dtype=torch.uint16).pin_memory()
+        self.Y, self.UV = self.tY.numpy(), self.tUV.numpy()
+        self.event = None
+
+
+class PinnedInputPool:
+    """Round-robin ring of pinned fisheye slots handed to the decode workers.
+
+    The staging copy (decoded plane -> pinned) runs on the decode threads,
+    which have headroom; the stitch thread then uploads with a true async
+    copy on a side stream instead of a ~9 ms/plane pageable transfer. The
+    ring is sized past the deepest queue chain so alloc() rarely waits.
+    """
+
+    def __init__(self, fh: int, fw: int, slots: int = 16):
+        import threading
+        self._slots = [_PinnedSlot(fh, fw) for _ in range(slots)]
+        self._i = 0
+        self._lock = threading.Lock()
+
+    def alloc(self) -> _PinnedSlot:
+        with self._lock:
+            slot = self._slots[self._i]
+            self._i = (self._i + 1) % len(self._slots)
+        if slot.event is not None:
+            slot.event.synchronize()      # previous upload finished; reusable
+            slot.event = None
+        return slot
+
+
 class _AsyncPlanes:
     """In-flight stitched frame: its D2H copy is running on a side stream.
 
@@ -91,14 +130,18 @@ class GpuStitcher:
         dev = pick_device(device)
         self.dev = torch.device(dev)
         self.W, self.H = width, height
-        if input_fmt not in ("yuv420p10le", "p010le"):
+        if input_fmt not in ("yuv420p10le", "p010le", "cuda"):
             raise ValueError(f"unsupported input_fmt {input_fmt!r}")
-        # p010 input (NVDEC's native download layout): samples top-aligned
-        # (value << 6, exact to undo in fp32) with interleaved chroma rows;
-        # _split_yuv unpacks on-device, which is free next to a CPU swscale.
+        # p010 input (NVDEC's native layout): samples top-aligned (value <<
+        # 6, exact to undo in fp32) with interleaved chroma rows; _split_yuv
+        # unpacks on-device, which is free next to a CPU swscale. "cuda" is
+        # the same layout already resident on the GPU (decode-to-device):
+        # (Y, UV) torch uint16 tensors, no upload at all.
         self.input_p010 = input_fmt == "p010le"
+        self.input_cuda = input_fmt == "cuda"
         self._down_stream = None      # lazy: see _ensure_async / stitch_yuv_async
         self._out_pool = None
+        self._up_stream = None        # lazy: side stream for pinned H2D
 
         # warp grids: map_x/map_y (pixel coords in the source fisheye) -> the
         # normalised [-1, 1] sampling grid grid_sample expects, uploaded once.
@@ -258,16 +301,50 @@ class GpuStitcher:
     #   and chroma is never up- then down-sampled (sharper). Luma Y is warped at
     #   full res, chroma UV at half res on the decimated grids.
 
-    def _split_yuv(self, packed: np.ndarray):
+    def _split_yuv(self, packed):
         fh, fw = self.fh, self.fw
-        t = torch.from_numpy(np.ascontiguousarray(packed)).to(self.dev).float()
-        if self.input_p010:
-            t = t * (1.0 / 64.0)          # top-aligned -> 10-bit values, exact
-            Y = t[:fh].view(1, 1, fh, fw)
-            uv = t[fh:fh + fh // 2]       # (fh/2, fw), U/V interleaved
+        if self.input_cuda:
+            # (Y, UV) uint16 tensors already on-device (decode-to-device);
+            # same p010 unpack as below, minus any transfer.
+            Yd, UVd = packed
+            cur = torch.cuda.current_stream()
+            Yd.record_stream(cur)
+            UVd.record_stream(cur)
+            Y = (Yd.float() * (1.0 / 64.0)).view(1, 1, fh, fw)
+            uv = UVd.float() * (1.0 / 64.0)
             U = uv[:, 0::2].unsqueeze(0).unsqueeze(0)
             V = uv[:, 1::2].unsqueeze(0).unsqueeze(0)
             return Y, U, V
+        if self.input_p010:
+            if isinstance(packed, _PinnedSlot):
+                # Pinned staging (filled by the decode worker): the H2D runs
+                # non-blocking on a side stream and overlaps the previous
+                # frame's kernels; the slot's event fences its reuse.
+                if self._up_stream is None:
+                    self._up_stream = torch.cuda.Stream()
+                cur = torch.cuda.current_stream()
+                with torch.cuda.stream(self._up_stream):
+                    Yd = packed.tY.to(self.dev, non_blocking=True)
+                    UVd = packed.tUV.to(self.dev, non_blocking=True)
+                    ev = torch.cuda.Event()
+                    ev.record()
+                packed.event = ev
+                cur.wait_event(ev)
+                Yd.record_stream(cur)
+                UVd.record_stream(cur)
+                Y = (Yd.float() * (1.0 / 64.0)).view(1, 1, fh, fw)
+                uv = UVd.float() * (1.0 / 64.0)
+            else:
+                # (Y, UV) p010 plane views straight from the decoder
+                # (top-aligned uint16, interleaved chroma), pageable upload.
+                Ynp, UVnp = packed
+                Y = (torch.from_numpy(Ynp).to(self.dev).float() * (1.0 / 64.0)
+                     ).view(1, 1, fh, fw)
+                uv = torch.from_numpy(UVnp).to(self.dev).float() * (1.0 / 64.0)
+            U = uv[:, 0::2].unsqueeze(0).unsqueeze(0)
+            V = uv[:, 1::2].unsqueeze(0).unsqueeze(0)
+            return Y, U, V
+        t = torch.from_numpy(np.ascontiguousarray(packed)).to(self.dev).float()
         Y = t[:fh].view(1, 1, fh, fw)
         U = t[fh:fh + fh // 4].reshape(1, 1, fh // 2, fw // 2)
         V = t[fh + fh // 4:fh + fh // 2].reshape(1, 1, fh // 2, fw // 2)
@@ -451,6 +528,15 @@ class GpuStitcher:
     def async_d2h(self) -> bool:
         """True when ``stitch_yuv_async`` is available (CUDA + uint16 cast)."""
         return self.dev.type == "cuda" and self._u16
+
+    def input_pool(self, slots: int = 16) -> "PinnedInputPool | None":
+        """A pinned staging pool for the decoder to fill (CUDA p010 path only).
+
+        Pass its ``alloc`` to ``iter_pairs``; None where it wouldn't help.
+        """
+        if self.dev.type != "cuda" or not self.input_p010:
+            return None
+        return PinnedInputPool(self.fh, self.fw, slots)
 
     def _ensure_async(self, slots: int = 6):
         if self._down_stream is None:
