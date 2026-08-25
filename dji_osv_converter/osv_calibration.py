@@ -203,7 +203,7 @@ def parse_mount_rotation(header_sample: bytes) -> np.ndarray | None:
     absent (older firmware / a different model may not carry it).
 
     To level a horizon this rotation must be applied to the accelerometer's
-    gravity vector; see ``pipeline.levelling_rotation``.
+    gravity vector; see ``pipeline.horizon_lock_rotation``.
     """
     blk = _descend(header_sample, 1, 3, 1)
     if blk is None or len(blk) < 12:

@@ -380,7 +380,7 @@ class Stitcher360:
             return np.eye(3)
         if self.levelling == "rocksteady":
             # Counter-rotate toward the smoothed trajectory, conjugated by the
-            # content bridge C_UP_STITCH so the raw orientation cancels EXACTLY:
+            # content bridge (C_UP_FORMAT @ mount) so the raw orientation cancels EXACTLY:
             # world->output becomes const @ smooth.T - the output follows the
             # SMOOTHED camera with the trajectory's own jitter (0.013 deg/frame).
             # (A G-conjugated composition applies the small correction about a

@@ -65,7 +65,7 @@ end-to-end (8.7 fps)** after a one-time ~10 s map build. See
 
 ## Documentation
 
-- [OSV format reference](osv-format.md) — the container, metadata tracks and
+- [OSV format reference](osv-format.md) (+ [historical notes](osv-format-notes.md)) — the container, metadata tracks and
   every decoded field
 - [Levelling & stabilisation math](levelling.md) — how each mode works and how
   it was validated

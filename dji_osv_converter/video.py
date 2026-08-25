@@ -78,7 +78,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     use_gpu = gpu and not multiband and stitch_gpu.available()
     # Rolling-shutter correction is OFF: what looked like readout jello was the
     # old rocksteady composition applying its correction about a tumbling axis.
-    # With the fixed C_UP_STITCH-conjugated formula the rendered jitter is 0.027
+    # With the fixed bridge-conjugated rocksteady formula the rendered jitter is 0.027
     # deg/frame calm / 0.071 moving (DJI: 0.046 / 0.118) and every RS
     # configuration measurably WORSENS it (0.06-0.15). The full RS pipeline
     # (tau/Jacobian tables, high-rate track, per-pixel grid shift) remains in

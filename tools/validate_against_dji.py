@@ -189,7 +189,6 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=3840)
     ap.add_argument("--outdir", default="output/validation")
     ap.add_argument("--flow", action="store_true", help="enable flow seam blending")
-    ap.add_argument("--lens", default=None, help="'equidistant' or 'a,b'")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -199,17 +198,6 @@ def main() -> int:
     W, H = args.width, args.width // 2
     st = Stitcher360.from_file(args.osv, width=W, height=H,
                                max_frames=max(args.frames) + 30)
-    if args.lens:
-        if args.lens == "lut":
-            import json as _json
-            d = _json.load(open("/tmp/lut.json"))
-            st.lens_model = {int(k): ("lut", v[0], v[1]) for k, v in d.items()}
-        elif args.lens in ("equidistant", "file"):
-            st.lens_model = args.lens
-        else:
-            st.lens_model = tuple(float(x) for x in args.lens.split(","))
-        st._cache.clear()
-    print(f"lens model: {st.lens_model}")
 
     print(f"\n{'frame':>6} {'NCC':>7} {'SSIM':>7} {'edgeNCC':>8} {'PSNR':>7} {'MAE':>6} "
           f"{'<=8':>7} {'<=16':>7} {'<=32':>7}")
