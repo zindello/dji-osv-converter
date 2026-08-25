@@ -6,7 +6,9 @@ __pycache__/
 *.egg-info/
 .vexp/
 .vscode/
-.claude/settings.local.json
+# .claude: track only the project skills; settings/hooks are machine-local (vexp)
+.claude/*
+!.claude/skills/
 
 # Sample footage, DJI reference exports, and everything we render from them.
 osv_example/
