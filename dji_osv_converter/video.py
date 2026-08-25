@@ -105,9 +105,11 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     # place behind this flag for future non-DJI sources.
     use_rs = False
     if use_gpu:
-        # 10-bit YUV in the decoder's cheapest layout: planar, or NVDEC's
-        # native p010 (skips a ~70 ms/frame swscale; unpacked on-device).
-        gpu_fmt = gpu_decode_fmt(hardware)
+        # 10-bit YUV in the decoder's cheapest layout: device-resident NVDEC
+        # frames ("cuda", zero decode PCIe traffic), NVDEC-native p010, or
+        # planar. Probed BEFORE the GpuStitcher touches torch/CUDA - the
+        # shared-primary-context hwdevice can't be created afterwards.
+        gpu_fmt = gpu_decode_fmt(hardware, input_osv)
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
@@ -183,12 +185,20 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     def _p010_frame(planes) -> "av.VideoFrame":
         Y, UV = planes
         fr = av.VideoFrame(width, height, "p010le")
+        torch = stitch_gpu.torch
         for plane, data in zip(fr.planes, (Y, UV)):
             buf = np.frombuffer(plane, np.uint16).reshape(plane.height, plane.line_size // 2)
-            buf[:, :data.shape[1]] = data
+            if torch is not None:
+                # torch's memcpy releases the GIL; numpy's does not, and an
+                # 88 MB/frame GIL hold here stalls the stitch thread's kernel
+                # launches (measured as the pipeline's limiter on the V100).
+                src = data if isinstance(data, torch.Tensor) else torch.from_numpy(data)
+                torch.from_numpy(buf)[:, :src.shape[1]].copy_(src)
+            else:
+                buf[:, :data.shape[1]] = data
         return fr
 
-    def _encode(pts, result):
+    def _build_frame(result) -> "av.VideoFrame":
         if use_gpu:
             if isinstance(result, stitch_gpu._AsyncPlanes):
                 # blocks until the side-stream D2H lands, then copies out of
@@ -201,9 +211,12 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                 # Software encoders (libx265) take planar yuv420p10le; the
                 # p010le->planar repack is lossless (same 10-bit samples).
                 fr = fr.reformat(format=vs.pix_fmt)
-        else:
-            fr = av.VideoFrame.from_ndarray(np.ascontiguousarray(result),
-                                            format="bgr24").reformat(format=vs.pix_fmt)
+            return fr
+        return av.VideoFrame.from_ndarray(np.ascontiguousarray(result),
+                                          format="bgr24").reformat(format=vs.pix_fmt)
+
+    def _encode(pts, result):
+        fr = _build_frame(result)
         fr.pts = pts
         for pkt in vs.encode(fr):
             out.mux(pkt)
@@ -225,25 +238,69 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         enc_q: "queue.Queue" = queue.Queue(maxsize=4)
         enc_done, enc_err = object(), []
 
-        def _encoder():
-            try:
-                while True:
-                    item = enc_q.get()
-                    if item is enc_done:
-                        return
-                    _encode(*item)
-            except Exception as e:                 # noqa: BLE001
-                enc_err.append(e)
+        # On CUDA the frame build (event wait + pinned->AVFrame copy,
+        # ~18 ms) and the encode call (~35 ms - libav nvenc re-uploads the
+        # frame internally) are each big enough to deserve their own stage:
+        # stitch -> build -> encode+mux on three threads (measured 59 -> ~40
+        # ms/frame). Elsewhere the two-thread layout stays (the M3 numbers
+        # were recorded with it, and its encode path is the lighter one).
+        gpu_async = use_gpu and gpu_stitch.async_d2h
+        stages = []
+        if gpu_async:
+            frame_q: "queue.Queue" = queue.Queue(maxsize=4)
 
-        enc_thread = threading.Thread(target=_encoder, daemon=True)
-        enc_thread.start()
-        # On CUDA the encoder thread receives async handles: the packed
+            def _builder():
+                try:
+                    while True:
+                        item = enc_q.get()
+                        if item is enc_done:
+                            frame_q.put(enc_done)
+                            return
+                        pts, result = item
+                        fr = _build_frame(result)
+                        fr.pts = pts
+                        frame_q.put(fr)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+                    frame_q.put(enc_done)
+
+            def _encoder():
+                try:
+                    while True:
+                        fr = frame_q.get()
+                        if fr is enc_done:
+                            return
+                        for pkt in vs.encode(fr):
+                            out.mux(pkt)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+
+            stages = [_builder, _encoder]
+        else:
+            def _encoder():
+                try:
+                    while True:
+                        item = enc_q.get()
+                        if item is enc_done:
+                            return
+                        _encode(*item)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+
+            stages = [_encoder]
+
+        threads = [threading.Thread(target=fn, daemon=True) for fn in stages]
+        for t in threads:
+            t.start()
+        # On CUDA the downstream threads receive async handles: the packed
         # planes travel device->pinned-host on a side stream while the
         # default stream is already stitching the next frame (MPS cannot -
         # one kernel queue - so it keeps the synchronous fetch).
-        gpu_async = use_gpu and gpu_stitch.async_d2h
+        pool = gpu_stitch.input_pool() if use_gpu else None
         for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
-                                               fmt=dec_fmt, hardware=hardware), size=4):
+                                               fmt=dec_fmt, hardware=hardware,
+                                               alloc=pool.alloc if pool else None),
+                                    size=4):
             enc_q.put((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
             done += 1
             if progress:
@@ -251,7 +308,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             if enc_err:
                 raise enc_err[0]
         enc_q.put(enc_done)
-        enc_thread.join()
+        for t in threads:
+            t.join()
         if enc_err:
             raise enc_err[0]
     else:
