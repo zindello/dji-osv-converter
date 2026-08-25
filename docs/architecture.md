@@ -132,9 +132,17 @@ Notable implementation facts:
   downloaded — so it gets a thread of its own, separate from the ~18 ms
   frame-build copy: e2e 53 → 46 ms/frame (22 fps), the V100's shipping
   number. Stage decomposition at 46 ms: D2H wait 0.5 (fully hidden),
-  build 18, encode+mux 35, decode 25/pair — the next win is feeding NVENC
-  device frames (needs PyAV support; roadmap). MPS keeps the two-thread
+  build 18, encode+mux 35, decode 25/pair. MPS keeps the two-thread
   layout its numbers were recorded with.
+- Device-frame NVENC encode needs NO PyAV fork — stock PyAV passes any
+  `cuda`-format frame straight through to the encoder, and reusable
+  CUDA frames can be minted by decoding a tiny generated clip
+  device-resident (see `tools/hwframe_encode_probe.py`). Measured on
+  the V100 it is a 2.7× LOSS (55 vs 20 ms/call): Volta's per-frame
+  nvEncMapInputResource/unmap costs more than the upload it saves, and
+  nvenc.c routes encoder-pool frames through the identical register/map
+  path, so no API (fork or otherwise) can do better on this silicon.
+  Re-probe on Turing+ before assuming either way.
 - One NVENC session runs on ONE engine: before segment-parallel encode
   the full base clip showed the encoder at exactly 33% in every sample —
   the V100's three engines with one pegged (~59 ms/frame on real

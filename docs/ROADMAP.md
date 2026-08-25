@@ -22,13 +22,20 @@ for the recorded modes and validated on worst-case footage:
    data (calibration, mount) is already read per file.
 2. **Beyond the NVDEC wall** — segment-parallel NVENC landed
    (`enc_sessions`, 310.9 → 200.7 s on the full base clip) and the V100
-   now runs its single decode engine at 94-100%: the remaining CUDA
-   levers are feeding NVENC device frames (drops the build copy +
-   libav's internal pageable re-upload; needs PyAV support) and
+   now runs its single decode engine at 94-100%. Device-frame NVENC
+   encode was **prototyped and measured — no PyAV fork needed** (stock
+   PyAV passes `cuda`-format frames through to NVENC; frames are minted
+   by decoding a tiny generated clip with `is_hw_owned=True` and
+   torch-writing their device pointers), but on Volta it LOSES 2.7×:
+   the per-frame `nvEncMapInputResource` cost exceeds the saved upload,
+   and encoder-pool frames (what a fork would add) ride the same
+   register/map path in nvenc.c. Run `tools/hwframe_encode_probe.py`
+   on any newer GPU (Turing+ maps cheaply) — if it reports a win, wire
+   the mint into `convert()`'s builder stage. The other lever is
    multi-clip batching on multi-NVDEC cards (Ampere+ have 2-5 decode
-   engines — there, running clips in parallel or splitting one clip's
-   decode across engines multiplies throughput; on the V100 it cannot).
-   Floors underneath: ~25 ms NVDEC pair, ~10.5 ms GPU compute.
+   engines; the V100's single engine caps aggregate throughput no
+   matter the arrangement). Floors underneath: ~25 ms NVDEC pair,
+   ~10.5 ms GPU compute.
 
 ## Done (2026-08-25): CUDA validation + optimization on the V100
 
