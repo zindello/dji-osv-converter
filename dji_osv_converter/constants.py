@@ -136,6 +136,26 @@ SEAM_DYN_GATE_LO = 10.0       # column-mean 8-bit disagreement: gating begins
 SEAM_DYN_GATE_HI = 20.0       # full narrow-cut above this
 SEAM_DYN_GATE_SIGMA = 30.0    # gate smoothing along the seam (path-grid cols)
 
+# [MEASURED] The in-camera ISP exposure-matches the lenses under EVEN
+# lighting (worst-case clip: step -1..-2.5/1024 in the overlap) but NOT
+# under asymmetric lighting: with bright lights into one lens the shed clip
+# shows VEILING GLARE - an additive shadow-lift on the flared lens, +20/1024
+# in shadows fading to ~0 in highlights, varying along the band (+19..-4 by
+# octant). A gain model under-corrects (measured); the correction is a
+# per-column additive offset, estimated ONLY from geometrically agreeing
+# overlap pixels (a whole-overlap estimator is fooled by parallax content -
+# measured +28 steps on the worst-case clip), split across both lenses and
+# ramped to zero at the band margins so each lens meets its own uncorrected
+# interior smoothly.
+# The correction is EMPIRICAL (stitcher.seam_luma_offsets): a per-luma
+# offset curve (16-bin LUT) plus a per-column residual. Scalar-gain and
+# additive-in-linear-light glare models were both tried and measured to
+# under-correct (residual +6..10/1024 in shadows) - the actual mismatch is
+# a luma-dependent transfer difference. Clamps are 5% of the luma range,
+# derived in code.
+SEAM_OFFSET_AGREE_T = 32.0    # 10-bit |A-B| below this = "agreeing" pixel
+SEAM_OFFSET_SIGMA = 30.0      # residual smoothing along the seam (path cols)
+
 
 # ---- Stabilisation ----------------------------------------------------------
 
@@ -179,6 +199,7 @@ __all__ = [
     "SEAM_FLOW_SIGMA_ACROSS", "SEAM_FLOW_MAX_SHIFT_PX",
     "SEAM_DYN_FEATHER_PX", "SEAM_DYN_COLS", "SEAM_DYN_SIGMA",
     "SEAM_DYN_GATE_LO", "SEAM_DYN_GATE_HI", "SEAM_DYN_GATE_SIGMA",
+    "SEAM_OFFSET_AGREE_T", "SEAM_OFFSET_SIGMA",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
 ]

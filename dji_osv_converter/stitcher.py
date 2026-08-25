@@ -269,6 +269,50 @@ def seam_flow_fields(gray_a: np.ndarray, gray_b: np.ndarray,
     return up(small[0]), up(small[1])
 
 
+def seam_luma_offsets(A: np.ndarray, B: np.ndarray, agree: np.ndarray,
+                      lo: float, hi: float, n_lut: int, sigma: float
+                      ) -> tuple[np.ndarray, np.ndarray]:
+    """Empirical inter-lens photometric mismatch, from AGREEING overlap pixels.
+
+    Returns ``(lut, o)``: ``lut[v]`` is the median (B - A) as a function of
+    luma value v (16 bins, interpolated to ``n_lut`` entries), and ``o`` a
+    per-column residual after the LUT (smoothed along the seam). Split-apply
+    both: ``A += (lut[A]+o)/2``, ``B -= (lut[B]+o)/2``, ramped in the band.
+
+    Model-free on purpose. Under asymmetric lighting the shed clip measures
+    +20/1024 in shadows fading to -3 in highlights - neither a gain (measured
+    residual +6) nor an additive-in-linear-light glare (residual +6..10)
+    fits; the empirical curve cancels whatever transfer difference the
+    in-camera ISP left, by construction. Under even lighting the curve is
+    ~0 and this is a no-op (worst-case clip: -1..-2.5/1024).
+    """
+    nb = 16
+    a_v, d_v = A[agree], (B - A)[agree]
+    edges = np.linspace(lo, hi, nb + 1)
+    idx = np.clip(np.digitize(a_v, edges) - 1, 0, nb - 1)
+    lut_b = np.full(nb, np.nan, np.float32)
+    for k in range(nb):
+        m = idx == k
+        if m.sum() > 200:
+            lut_b[k] = np.median(d_v[m])
+    centers = (edges[:-1] + edges[1:]) * 0.5
+    valid = ~np.isnan(lut_b)
+    clamp = (hi - lo) * 0.05
+    if not valid.any():
+        return np.zeros(n_lut, np.float32), np.zeros(A.shape[1], np.float32)
+    lb = np.interp(centers, centers[valid], lut_b[valid]).astype(np.float32)
+    lb = cv2.GaussianBlur(lb.reshape(1, -1), (0, 0), 1.5).ravel()
+    lut = np.clip(np.interp(np.arange(n_lut, dtype=np.float32), centers, lb,
+                            left=lb[0], right=lb[-1]), -clamp, clamp).astype(np.float32)
+    res = (B - A) - lut[np.clip(A.astype(np.int64), 0, n_lut - 1)]
+    dif = np.where(agree, res, np.nan)
+    with np.errstate(all="ignore"):
+        o = np.nanmedian(dif, axis=0)
+    o = np.nan_to_num(o, nan=0.0).astype(np.float32)
+    o = cv2.GaussianBlur(o.reshape(1, -1), (0, 0), sigmaX=sigma, sigmaY=0.1).ravel()
+    return lut, np.clip(o, -clamp * 0.75, clamp * 0.75).astype(np.float32)
+
+
 def seam_path(cost: np.ndarray, out_w: int) -> np.ndarray:
     """Min-disagreement seam row per column through the blend band.
 
@@ -349,16 +393,50 @@ def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
     An earlier full-frame version of this existed and made seams WORSE -
     unconstrained Farneback over the whole pano produced large phantom bends.
     """
-    from .constants import SEAM_FLOW_SCALE
+    from .constants import (SEAM_FLOW_SCALE, SEAM_OFFSET_AGREE_T,
+                            SEAM_OFFSET_SIGMA)
     scale = SEAM_FLOW_SCALE if scale is None else scale
     r0, r1 = band_rows(weights)
+
+    def grays(A, B):
+        sw, sh = max(int(A.shape[1] * scale), 32), max(int(A.shape[0] * scale), 32)
+        ga = cv2.cvtColor(cv2.resize(A, (sw, sh), interpolation=cv2.INTER_AREA),
+                          cv2.COLOR_BGR2GRAY)
+        gb = cv2.cvtColor(cv2.resize(B, (sw, sh), interpolation=cv2.INTER_AREA),
+                          cv2.COLOR_BGR2GRAY)
+        return ga, gb
+
+    ga, gb = grays(warped[0][r0:r1], warped[1][r0:r1])
+    # Veiling-glare correction (constants.SEAM_OFFSET_*): per-column additive
+    # offset from geometrically AGREEING pixels, split across the lenses and
+    # ramped to zero at the band margins (mirrors the GPU path; 8-bit here).
+    agree = np.abs(ga.astype(np.int16) - gb.astype(np.int16)) < SEAM_OFFSET_AGREE_T / 4.0
+    lut, o = seam_luma_offsets(ga.astype(np.float32), gb.astype(np.float32),
+                               agree, lo=0.0, hi=255.0, n_lut=256,
+                               sigma=SEAM_OFFSET_SIGMA)
+    h_band, w_full = r1 - r0, warped[0].shape[1]
+    o_full = np.interp(np.arange(w_full), np.linspace(0, w_full - 1, o.size),
+                       o).astype(np.float32)
+    wc_ = weights[r0:r1]
+    inner_rows = np.where(((wc_ > 0.001) & (wc_ < 0.999)).any(axis=1))[0]
+    ri0, ri1 = int(inner_rows.min()), int(inner_rows.max())
+    rp = np.ones(h_band, np.float32)
+    if ri0 > 0:
+        rp[:ri0] = np.linspace(0.0, 1.0, ri0, endpoint=False)
+    if ri1 < h_band - 1:
+        rp[ri1 + 1:] = np.linspace(1.0, 0.0, h_band - ri1 - 1)
+    w0 = warped[0].astype(np.float32)
+    w1 = warped[1].astype(np.float32)
+    for wimg, sgn in ((w0, 0.5), (w1, -0.5)):
+        gray = cv2.cvtColor(wimg[r0:r1].astype(np.uint8), cv2.COLOR_BGR2GRAY)
+        corr = (lut[gray] + o_full[None, :]) * rp[:, None] * sgn
+        wimg[r0:r1] += corr[..., None]
+    warped = [np.clip(w0, 0, 255).astype(np.uint8),
+              np.clip(w1, 0, 255).astype(np.uint8)]
+    ga, gb = grays(warped[0][r0:r1], warped[1][r0:r1])
+
     A, B = warped[0][r0:r1], warped[1][r0:r1]
     h, w = A.shape[:2]
-    sw, sh = max(int(w * scale), 32), max(int(h * scale), 32)
-    ga = cv2.cvtColor(cv2.resize(A, (sw, sh), interpolation=cv2.INTER_AREA),
-                      cv2.COLOR_BGR2GRAY)
-    gb = cv2.cvtColor(cv2.resize(B, (sw, sh), interpolation=cv2.INTER_AREA),
-                      cv2.COLOR_BGR2GRAY)
     f01, f10 = seam_flow_fields(ga, gb, (h, w))
 
     wc = weights[r0:r1]
@@ -421,5 +499,5 @@ def coverage_report(cams: list[CameraMap]) -> dict:
 
 __all__ = ["warp", "blend", "multiband_blend", "flow_blend", "band_rows",
            "seam_flow_small", "seam_flow_fields", "seam_path", "seam_gate",
-           "seam_weights",
+           "seam_luma_offsets", "seam_weights",
            "stitch", "match_exposure", "coverage_report"]

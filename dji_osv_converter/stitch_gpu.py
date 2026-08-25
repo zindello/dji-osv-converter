@@ -303,8 +303,19 @@ class GpuStitcher:
         xsh = torch.linspace(-1.0, 1.0, W // 2, device=self.dev)
         gyh, gxh = torch.meshgrid(ysh, xsh, indexing="ij")
         baseh = torch.stack([gxh, gyh], -1).unsqueeze(0)
+        # Vertical ramp for the glare offset: 1 across the inner blend band,
+        # falling linearly to 0 at the outer margin edges.
+        bh = r1 - r0
+        rows = np.where(self._sf_inner4.any(axis=1))[0]
+        ri0, ri1 = int(rows.min()), int(rows.max())
+        rp = np.ones(bh, dtype=np.float32)
+        if ri0 > 0:
+            rp[:ri0] = np.linspace(0.0, 1.0, ri0, endpoint=False)
+        if ri1 < bh - 1:
+            rp[ri1 + 1:] = np.linspace(1.0, 0.0, bh - ri1 - 1)
+        ramp = torch.from_numpy(rp).to(self.dev)[:, None]
         self._sf = dict(t0=t0, t1=t1, t0h=t0[:, :, ::2, ::2], t1h=t1[:, :, ::2, ::2],
-                        base=base, baseh=baseh)
+                        base=base, baseh=baseh, ramp=ramp)
 
     def _seam_flow_apply(self, Ya, UVa, Yb, UVb):
         """Morph both lenses toward each other inside the blend band.
@@ -321,6 +332,32 @@ class GpuStitcher:
         sf = self._sf
         r0, r1 = self._sf_rows
         H, W = self.H, self.W
+
+        # Veiling-glare correction (see constants.SEAM_OFFSET_*): with bright
+        # lights into one lens the ISP leaves an ADDITIVE shadow-lift at the
+        # seam (+20/1024 measured). Estimate a per-column offset from
+        # geometrically AGREEING overlap pixels, split it across both lenses,
+        # ramped to zero at the band margins - the lenses meet exactly at the
+        # seam and each fades into its own uncorrected interior. Runs before
+        # flow/seam so the mismatch pollutes neither.
+        from .constants import SEAM_OFFSET_AGREE_T, SEAM_OFFSET_SIGMA
+        from .stitcher import seam_luma_offsets
+        import cv2 as _cv2
+        an = F.avg_pool2d(Ya[:, :, r0:r1], (1, 4))[0, 0].cpu().numpy()
+        bn = F.avg_pool2d(Yb[:, :, r0:r1], (1, 4))[0, 0].cpu().numpy()
+        agree = self._sf_inner4 & (np.abs(an - bn) < SEAM_OFFSET_AGREE_T)
+        lut, o = seam_luma_offsets(an, bn, agree, lo=64.0, hi=940.0, n_lut=1024,
+                                   sigma=SEAM_OFFSET_SIGMA)
+        lut_t = torch.from_numpy(0.5 * lut).to(self.dev)
+        o_t = torch.from_numpy(0.5 * np.interp(
+            np.arange(W), np.arange(o.size) * 4 + 1.5, o).astype(np.float32)
+        ).to(self.dev)[None, :]
+        ramp = sf["ramp"]                                 # (bh,1): 0 edges, 1 in band
+        for plane, sgn in ((Ya, 1.0), (Yb, -1.0)):
+            band = plane[:, :, r0:r1]
+            corr = lut_t[band.clamp(0, 1023).long()] + o_t
+            plane[:, :, r0:r1] = band + sgn * corr * ramp
+
         k = max(int(round(1.0 / SEAM_FLOW_SCALE)), 1)
         a_s = F.avg_pool2d(Ya[:, :, r0:r1], k)
         b_s = F.avg_pool2d(Yb[:, :, r0:r1], k)
