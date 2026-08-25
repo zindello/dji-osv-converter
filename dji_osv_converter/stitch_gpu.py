@@ -82,6 +82,12 @@ class GpuStitcher:
 
         w = seam_weights(cams, band_px).astype(np.float32)           # (H, W) in [0,1]
         self.w3 = torch.from_numpy(w)[None, None].to(self.dev)       # (1,1,H,W)
+        # Seam-flow band bounds (even-aligned for the half-res chroma). The
+        # per-frame flow statics are built lazily on first seam_flow use.
+        from .stitcher import band_rows
+        r0, r1 = band_rows(w)
+        self._sf_rows = (r0 - r0 % 2, r1 + r1 % 2)
+        self._sf = None
         # static overlap mask, pooled to 1/8 (exposure works at low res)
         self.ov8 = F.avg_pool2d(self.valid[0] * self.valid[1], 8)
 
@@ -274,6 +280,75 @@ class GpuStitcher:
             UVw = (UVw - 512.0) * self.lsc_UV[i] + 512.0
         return Yw, UVw
 
+    # ---- seam parallax flow (opt-in) ----------------------------------------
+
+    def _sf_init(self):
+        """Statics for the band-limited seam-flow morph (built on first use)."""
+        r0, r1 = self._sf_rows
+        H, W = self.H, self.W
+        wc = self.w3[:, :, r0:r1, :]
+        band = 4.0 * wc * (1.0 - wc)                     # 0 at edges, 1 mid-band
+        t0, t1 = (1.0 - wc) * band, wc * band            # per-lens morph ramps
+        ys = torch.linspace(-1.0, 1.0, H, device=self.dev)[r0:r1]
+        xs = torch.linspace(-1.0, 1.0, W, device=self.dev)
+        gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+        base = torch.stack([gx, gy], -1).unsqueeze(0)    # (1,bh,W,2), full-plane coords
+        ysh = torch.linspace(-1.0, 1.0, H // 2, device=self.dev)[r0 // 2:r1 // 2]
+        xsh = torch.linspace(-1.0, 1.0, W // 2, device=self.dev)
+        gyh, gxh = torch.meshgrid(ysh, xsh, indexing="ij")
+        baseh = torch.stack([gxh, gyh], -1).unsqueeze(0)
+        self._sf = dict(t0=t0, t1=t1, t0h=t0[:, :, ::2, ::2], t1h=t1[:, :, ::2, ::2],
+                        base=base, baseh=baseh)
+
+    def _seam_flow_apply(self, Ya, UVa, Yb, UVb):
+        """Morph both lenses toward each other inside the blend band.
+
+        The flow itself runs on the CPU (Farneback on a ~90x1920 gray pair,
+        see stitcher.seam_flow_small); only tiny fields cross the bus, and the
+        band resample is two small grid_samples per lens on-device.
+        """
+        import cv2
+        from .stitcher import seam_flow_small
+        from .constants import SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_SCALE
+        if self._sf is None:
+            self._sf_init()
+        sf = self._sf
+        r0, r1 = self._sf_rows
+        H, W = self.H, self.W
+        k = max(int(round(1.0 / SEAM_FLOW_SCALE)), 1)
+        a_s = F.avg_pool2d(Ya[:, :, r0:r1], k)
+        b_s = F.avg_pool2d(Yb[:, :, r0:r1], k)
+        # 10-bit centred Y -> 8-bit gray for Farneback (values 64-940 -> 16-235)
+        ga = (a_s[0, 0] * 0.25).clamp(0, 255).byte().cpu().numpy()
+        gb = (b_s[0, 0] * 0.25).clamp(0, 255).byte().cpu().numpy()
+        f01s, f10s = seam_flow_small(ga, gb)             # small-res px units
+        sh, sw = ga.shape
+        bh = r1 - r0
+
+        def up(f, size, w_full, h_full):
+            t = torch.from_numpy(np.ascontiguousarray(f)).to(self.dev)
+            t = t.permute(2, 0, 1).unsqueeze(0)          # (1,2,sh,sw)
+            t = F.interpolate(t, size=size, mode="bilinear", align_corners=False)
+            fx = (t[:, 0] * (W / sw)).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
+            fy = (t[:, 1] * (bh / sh)).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
+            # full-res px -> normalized coords of the sampled (h_full, w_full) plane
+            return torch.stack([fx * (2.0 / (w_full - 1)),
+                                fy * (2.0 / (h_full - 1))], -1)
+
+        o01 = up(f01s, (bh, W), W, H)
+        o10 = up(f10s, (bh, W), W, H)
+        o01h = up(f01s * 0.5, (bh // 2, W // 2), W // 2, H // 2)
+        o10h = up(f10s * 0.5, (bh // 2, W // 2), W // 2, H // 2)
+        t0, t1 = sf["t0"].permute(0, 2, 3, 1), sf["t1"].permute(0, 2, 3, 1)
+        t0h, t1h = sf["t0h"].permute(0, 2, 3, 1), sf["t1h"].permute(0, 2, 3, 1)
+        gs = lambda img, grid: F.grid_sample(img, grid, mode="bilinear",
+                                             align_corners=True, padding_mode="border")
+        Ya[:, :, r0:r1] = gs(Ya, sf["base"] + o01 * t0)
+        Yb[:, :, r0:r1] = gs(Yb, sf["base"] + o10 * t1)
+        UVa[:, :, r0 // 2:r1 // 2] = gs(UVa, sf["baseh"] + o01h * t0h)
+        UVb[:, :, r0 // 2:r1 // 2] = gs(UVb, sf["baseh"] + o10h * t1h)
+        return Ya, UVa, Yb, UVb
+
     def _spatial_gain(self, Ya, Yb, max_gain: float):
         """Smooth luma gain field from the overlap, at low res.
 
@@ -376,13 +451,17 @@ class GpuStitcher:
         return to(Yp), to(UVp)
 
     def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
-                   exposure: bool = False, wb: bool = False, rs=None):
+                   exposure: bool = False, wb: bool = False, rs=None,
+                   seam_flow: bool = False):
         """Stitch a 10-bit YUV fisheye pair -> p010le planes (Y, UV) for encode.
 
         ``wb=True`` uses the per-channel white-balance exposure match (matches the
         two lenses' colour, ~15ms/frame dearer); the default luma-only match is
         the shipping path. ``rs`` = (theta (S,3), t0, scale) enables per-pixel
         rolling-shutter correction (pipeline.Stitcher360.rs_args_for).
+        ``seam_flow=True`` morphs the two lenses toward each other inside the
+        blend band (optical flow), reconciling parallax on near objects that
+        cross the seam (~+30 ms/frame, CPU Farneback).
         """
         if rs is not None and self.rs_tau is not None:
             th = torch.from_numpy(np.ascontiguousarray(rs[0])).to(self.dev)
@@ -391,6 +470,8 @@ class GpuStitcher:
             rs = None
         Ya, UVa = self._warp_planes(y0, 0, rs)
         Yb, UVb = self._warp_planes(y1, 1, rs)
+        if seam_flow:
+            Ya, UVa, Yb, UVb = self._seam_flow_apply(Ya, UVa, Yb, UVb)
         if exposure:
             expose = self._expose_wb if wb else self._expose_luma
             Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)

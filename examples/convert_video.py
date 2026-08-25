@@ -33,6 +33,9 @@ def main() -> int:
     ap.add_argument("--bitrate", type=int, default=None, help="target bits/s")
     ap.add_argument("--8bit", dest="bit10", action="store_false", help="8-bit output")
     ap.add_argument("--no-audio", dest="audio", action="store_false")
+    ap.add_argument("--seam-flow", dest="seam_flow", action="store_true",
+                    help="optical-flow seam morph: fixes parallax steps on near "
+                         "objects crossing the seam (~+30 ms/frame)")
     ap.add_argument("--multiband", dest="multiband", action="store_true",
                     help="multi-band seam blend (default: linear - identical after "
                          "exposure match, ~1s/frame faster)")
@@ -73,6 +76,7 @@ def main() -> int:
                   start=args.start, count=args.count, codec=args.codec,
                   bitrate=args.bitrate, bit10=args.bit10, audio=args.audio,
                   multiband=args.multiband, exposure=args.exposure,
+                  seam_flow=args.seam_flow,
                   exposure_wb=args.exposure_wb, lsc=args.lsc,
                   levelling=args.levelling, hardware=args.hardware, gpu=args.gpu,
                   pipeline=args.pipeline, spherical=True, progress=progress)

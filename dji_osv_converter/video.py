@@ -62,6 +62,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             bitrate: int | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = False,
             exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
+            seam_flow: bool = False,
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
@@ -85,6 +86,12 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     ``multiband`` defaults off for video: the linear feathered blend is visually
     indistinguishable from multi-band on this (aligned, ISP-matched) footage and
     ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.
+
+    ``seam_flow`` (opt-in, ~+30 ms/frame) morphs the two lenses toward each
+    other inside the blend band with gated optical flow, reconciling the
+    parallax on NEAR objects crossing the seam (the lenses sit a few cm
+    apart; a bar ~1 m away steps visibly at the seam without it). Distant
+    scenes don't need it.
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
@@ -171,8 +178,10 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         if use_gpu:
             rs = stitcher.rs_args_for(idx) if use_rs else None
             return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure,
-                                         wb=exposure_wb, rs=rs)          # (Y, UV) p010
-        return stitcher.stitch(f0, f1, frame=idx, exposure=exposure, multiband=multiband)
+                                         wb=exposure_wb, rs=rs,
+                                         seam_flow=seam_flow)            # (Y, UV) p010
+        return stitcher.stitch(f0, f1, frame=idx, exposure=exposure,
+                               multiband=multiband, flow=seam_flow)
 
     def _p010_frame(planes) -> "av.VideoFrame":
         Y, UV = planes

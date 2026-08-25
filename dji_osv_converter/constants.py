@@ -104,6 +104,21 @@ DEFAULT_FOV_DEG = 180.0 + SEAM_OVERLAP_RATIO * 360.0    # 193.68
 FEATHER_FRACTION = 1.0 / 3.0
 
 
+# ---- Seam parallax flow (opt-in) --------------------------------------------
+#
+# [ASSUMED] Parameters of the band-limited optical-flow seam morph
+# (stitcher.flow_blend / GpuStitcher seam_flow). The two lenses sit a few cm
+# apart, so near objects genuinely disagree in the overlap; the morph warps
+# each side toward the other inside the blend band only. Tuned on the shed
+# clip (frame 4453, a bar ~1 m from the camera crossing the seam); no ground
+# truth exists for these - revisit if a different rig geometry appears.
+SEAM_FLOW_SCALE = 0.25        # flow computed at this fraction of full res
+SEAM_FLOW_MARGIN_PX = 96      # context rows kept around the blend band
+SEAM_FLOW_SIGMA_ALONG = 18.0  # flow smoothing along the seam (small-res px)
+SEAM_FLOW_SIGMA_ACROSS = 2.5  # flow smoothing across the seam
+SEAM_FLOW_MAX_SHIFT_PX = 60.0 # clamp on the per-pixel morph (full-res px)
+
+
 # ---- Stabilisation ----------------------------------------------------------
 
 # [ASSUMED] Gaussian sigma (in frames) of the RockSteady trajectory smoother.
@@ -142,6 +157,8 @@ __all__ = [
     "K_PLAIN", "C_UP_FORMAT", "QUAT_ORDER", "WORLD_UP", "WORLD_FWD",
     "EXTRINSIC_SOURCE", "EXTRINSIC_ORDER",
     "SEAM_OVERLAP_RATIO", "DEFAULT_FOV_DEG", "FEATHER_FRACTION",
+    "SEAM_FLOW_SCALE", "SEAM_FLOW_MARGIN_PX", "SEAM_FLOW_SIGMA_ALONG",
+    "SEAM_FLOW_SIGMA_ACROSS", "SEAM_FLOW_MAX_SHIFT_PX",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
 ]

@@ -206,36 +206,35 @@ def multiband_blend(warped: list[np.ndarray], cams: list[CameraMap],
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
-               weights: np.ndarray, scale: float = 0.25,
-               max_shift: float = 80.0) -> np.ndarray:
-    """Blend with optical-flow correction for parallax.
+def band_rows(weights: np.ndarray, margin: int | None = None) -> tuple[int, int]:
+    """Row range [r0, r1) of the blend band (plus context margin)."""
+    from .constants import SEAM_FLOW_MARGIN_PX
+    m = SEAM_FLOW_MARGIN_PX if margin is None else margin
+    band = (weights > 0.001) & (weights < 0.999)
+    rows = np.where(band.any(axis=1))[0]
+    return max(int(rows.min()) - m, 0), min(int(rows.max()) + m + 1, weights.shape[0])
 
-    The two lenses sit a few centimetres apart, so near objects land in
-    different places in the two projections while distant ones align. Measured
-    on real footage: median inter-camera displacement 0.2 px but p90 ~23 px.
-    No static blend can reconcile that - the images genuinely disagree.
 
-    So we morph across the seam: each image is progressively warped towards
-    the other as the blend weight shifts, meaning features coincide wherever
-    they are being mixed. This is what DJI's FlowStitchWarpFusion does.
+def seam_flow_small(gray_a: np.ndarray, gray_b: np.ndarray
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """Gated, band-smoothed flow a->b and b->a for the seam band (small res).
 
-    Flow is computed at reduced `scale` because flow fields are smooth and
-    full-resolution Farneback on a 7680x3840 frame is needlessly slow.
+    ``gray_a/b`` are the two lenses' warped band crops as small uint8 grays
+    (downscaled by SEAM_FLOW_SCALE). Returns (sh, sw, 2) fields in SMALL-res
+    pixel units - callers upsample and rescale (CPU: seam_flow_fields; GPU:
+    on-device interpolate).
+
+    Guardrails, each of which the naive full-frame version lacked (that
+    version bent straight objects far worse than no correction at all):
+    forward-backward consistency gating, then ANISOTROPIC smoothing - heavy
+    along the seam so the morph cannot vary abruptly and shear structures
+    that cross it, light across the seam. The hard shift clamp is applied at
+    full res by the caller.
     """
-    h, w = warped[0].shape[:2]
-    sw, sh = max(int(w * scale), 32), max(int(h * scale), 32)
-
-    small = [cv2.cvtColor(cv2.resize(im, (sw, sh), interpolation=cv2.INTER_AREA),
-                          cv2.COLOR_BGR2GRAY) for im in warped]
-    f01 = cv2.calcOpticalFlowFarneback(small[0], small[1], None,
-                                       0.5, 4, 25, 3, 7, 1.5, 0)
-    f10 = cv2.calcOpticalFlowFarneback(small[1], small[0], None,
-                                       0.5, 4, 25, 3, 7, 1.5, 0)
-
-    # Forward-backward consistency. Where the two directions disagree the flow
-    # is guesswork - typically flat, untextured areas - and applying it tears
-    # the image. Trust only mutually consistent flow.
+    from .constants import SEAM_FLOW_SIGMA_ACROSS, SEAM_FLOW_SIGMA_ALONG
+    sh, sw = gray_a.shape
+    f01 = cv2.calcOpticalFlowFarneback(gray_a, gray_b, None, 0.5, 3, 25, 3, 7, 1.5, 0)
+    f10 = cv2.calcOpticalFlowFarneback(gray_b, gray_a, None, 0.5, 3, 25, 3, 7, 1.5, 0)
     gxs, gys = np.meshgrid(np.arange(sw, dtype=np.float32),
                            np.arange(sh, dtype=np.float32))
     back = cv2.remap(f10, gxs + f01[..., 0], gys + f01[..., 1],
@@ -245,34 +244,74 @@ def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
     conf = np.clip(1.0 - resid / (0.5 * mag + 2.0), 0.0, 1.0).astype(np.float32)
     conf = cv2.GaussianBlur(conf, (0, 0), 3.0)
 
-    # Smooth and gate the flow before it is amplified by the upscale.
     def clean(f):
         f = f * conf[..., None]
-        f = cv2.GaussianBlur(f, (0, 0), 4.0)
+        return cv2.GaussianBlur(f, (0, 0), sigmaX=SEAM_FLOW_SIGMA_ALONG,
+                                sigmaY=SEAM_FLOW_SIGMA_ACROSS)
+
+    return clean(f01), clean(f10)
+
+
+def seam_flow_fields(gray_a: np.ndarray, gray_b: np.ndarray,
+                     out_size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """Full-band-res (h, w, 2) pixel-displacement fields (see seam_flow_small)."""
+    from .constants import SEAM_FLOW_MAX_SHIFT_PX
+    sh, sw = gray_a.shape
+    h, w = out_size
+    small = seam_flow_small(gray_a, gray_b)
+
+    def up(f):
         big = cv2.resize(f, (w, h), interpolation=cv2.INTER_LINEAR)
         big[..., 0] *= w / sw
         big[..., 1] *= h / sh
-        return np.clip(big, -max_shift, max_shift)
+        return np.clip(big, -SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
 
-    f01, f10 = clean(f01), clean(f10)
+    return up(small[0]), up(small[1])
 
+
+def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
+               weights: np.ndarray, scale: float | None = None) -> np.ndarray:
+    """Blend with band-limited optical-flow correction for parallax.
+
+    The two lenses sit a few centimetres apart, so near objects land in
+    different places in the two projections while distant ones align. Measured
+    on real footage: median inter-camera displacement 0.2 px but p90 ~23 px.
+    No static blend can reconcile that - the images genuinely disagree. So
+    each image is progressively morphed towards the other as the blend weight
+    shifts, and features coincide wherever they are being mixed (DJI's
+    FlowStitchWarpFusion does the same).
+
+    Everything happens INSIDE the blend band (plus a context margin): outside
+    it one camera owns the pixel outright and there is nothing to reconcile.
+    An earlier full-frame version of this existed and made seams WORSE -
+    unconstrained Farneback over the whole pano produced large phantom bends.
+    """
+    from .constants import SEAM_FLOW_SCALE
+    scale = SEAM_FLOW_SCALE if scale is None else scale
+    r0, r1 = band_rows(weights)
+    A, B = warped[0][r0:r1], warped[1][r0:r1]
+    h, w = A.shape[:2]
+    sw, sh = max(int(w * scale), 32), max(int(h * scale), 32)
+    ga = cv2.cvtColor(cv2.resize(A, (sw, sh), interpolation=cv2.INTER_AREA),
+                      cv2.COLOR_BGR2GRAY)
+    gb = cv2.cvtColor(cv2.resize(B, (sw, sh), interpolation=cv2.INTER_AREA),
+                      cv2.COLOR_BGR2GRAY)
+    f01, f10 = seam_flow_fields(ga, gb, (h, w))
+
+    wc = weights[r0:r1]
+    band = (4.0 * wc * (1.0 - wc)).astype(np.float32)   # 0 at edges, 1 mid-band
+    t0 = ((1.0 - wc) * band).astype(np.float32)
+    t1 = (wc * band).astype(np.float32)
     gx, gy = np.meshgrid(np.arange(w, dtype=np.float32),
                          np.arange(h, dtype=np.float32))
-    a = weights[..., None]
-
-    # Only morph inside the transition band. Where one camera owns the pixel
-    # outright there is nothing to reconcile, and warping there would drag in
-    # neighbouring content for no reason.
-    band = (4.0 * weights * (1.0 - weights)).astype(np.float32)   # 0 at edges, 1 mid-band
-    t0 = ((1.0 - weights) * band).astype(np.float32)
-    t1 = (weights * band).astype(np.float32)
-
-    m0 = cv2.remap(warped[0], gx + f01[..., 0] * t0, gy + f01[..., 1] * t0,
+    m0 = cv2.remap(A, gx + f01[..., 0] * t0, gy + f01[..., 1] * t0,
                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    m1 = cv2.remap(warped[1], gx + f10[..., 0] * t1, gy + f10[..., 1] * t1,
+    m1 = cv2.remap(B, gx + f10[..., 0] * t1, gy + f10[..., 1] * t1,
                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
-    out = m0.astype(np.float32) * a + m1.astype(np.float32) * (1.0 - a)
+    a = weights[..., None].astype(np.float32)
+    out = warped[0].astype(np.float32) * a + warped[1].astype(np.float32) * (1.0 - a)
+    out[r0:r1] = m0.astype(np.float32) * a[r0:r1] + m1.astype(np.float32) * (1.0 - a[r0:r1])
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -303,5 +342,6 @@ def coverage_report(cams: list[CameraMap]) -> dict:
     }
 
 
-__all__ = ["warp", "blend", "multiband_blend", "flow_blend", "seam_weights",
+__all__ = ["warp", "blend", "multiband_blend", "flow_blend", "band_rows",
+           "seam_flow_small", "seam_flow_fields", "seam_weights",
            "stitch", "match_exposure", "coverage_report"]

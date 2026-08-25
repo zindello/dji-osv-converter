@@ -43,6 +43,15 @@
                     <a class="function" href="#flow_blend">flow_blend</a>
             </li>
             <li>
+                    <a class="function" href="#band_rows">band_rows</a>
+            </li>
+            <li>
+                    <a class="function" href="#seam_flow_small">seam_flow_small</a>
+            </li>
+            <li>
+                    <a class="function" href="#seam_flow_fields">seam_flow_fields</a>
+            </li>
+            <li>
                     <a class="function" href="#seam_weights">seam_weights</a>
             </li>
             <li>
@@ -146,25 +155,83 @@ irrelevant to the result except at the coarsest levels, where it should be.</p>
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">flow_blend</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">warped</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>,</span><span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">weights</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.25</span>,</span><span class="param">	<span class="n">max_shift</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">80.0</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>:</span></span>
+        <span class="name">flow_blend</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">warped</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>,</span><span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">weights</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>:</span></span>
 
         
     </div>
     <a class="headerlink" href="#flow_blend"></a>
     
-            <div class="docstring"><p>Blend with optical-flow correction for parallax.</p>
+            <div class="docstring"><p>Blend with band-limited optical-flow correction for parallax.</p>
 
 <p>The two lenses sit a few centimetres apart, so near objects land in
 different places in the two projections while distant ones align. Measured
 on real footage: median inter-camera displacement 0.2 px but p90 ~23 px.
-No static blend can reconcile that - the images genuinely disagree.</p>
+No static blend can reconcile that - the images genuinely disagree. So
+each image is progressively morphed towards the other as the blend weight
+shifts, and features coincide wherever they are being mixed (DJI's
+FlowStitchWarpFusion does the same).</p>
 
-<p>So we morph across the seam: each image is progressively warped towards
-the other as the blend weight shifts, meaning features coincide wherever
-they are being mixed. This is what DJI's FlowStitchWarpFusion does.</p>
+<p>Everything happens INSIDE the blend band (plus a context margin): outside
+it one camera owns the pixel outright and there is nothing to reconcile.
+An earlier full-frame version of this existed and made seams WORSE -
+unconstrained Farneback over the whole pano produced large phantom bends.</p>
+</div>
 
-<p>Flow is computed at reduced <code>scale</code> because flow fields are smooth and
-full-resolution Farneback on a 7680x3840 frame is needlessly slow.</p>
+
+                </section>
+                <section id="band_rows">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">band_rows</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">weights</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>, </span><span class="param"><span class="n">margin</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#band_rows"></a>
+    
+            <div class="docstring"><p>Row range [r0, r1) of the blend band (plus context margin).</p>
+</div>
+
+
+                </section>
+                <section id="seam_flow_small">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">seam_flow_small</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">gray_a</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">gray_b</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span></span><span class="return-annotation">) -> <span class="nb">tuple</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#seam_flow_small"></a>
+    
+            <div class="docstring"><p>Gated, band-smoothed flow a->b and b->a for the seam band (small res).</p>
+
+<p><code>gray_a/b</code> are the two lenses' warped band crops as small uint8 grays
+(downscaled by SEAM_FLOW_SCALE). Returns (sh, sw, 2) fields in SMALL-res
+pixel units - callers upsample and rescale (CPU: seam_flow_fields; GPU:
+on-device interpolate).</p>
+
+<p>Guardrails, each of which the naive full-frame version lacked (that
+version bent straight objects far worse than no correction at all):
+forward-backward consistency gating, then ANISOTROPIC smoothing - heavy
+along the seam so the morph cannot vary abruptly and shear structures
+that cross it, light across the seam. The hard shift clamp is applied at
+full res by the caller.</p>
+</div>
+
+
+                </section>
+                <section id="seam_flow_fields">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">seam_flow_fields</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">gray_a</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">gray_b</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">out_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span></span><span class="return-annotation">) -> <span class="nb">tuple</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#seam_flow_fields"></a>
+    
+            <div class="docstring"><p>Full-band-res (h, w, 2) pixel-displacement fields (see seam_flow_small).</p>
 </div>
 
 

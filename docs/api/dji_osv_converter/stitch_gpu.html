@@ -261,7 +261,7 @@ device changes. Construct only when <code><a href="#available">available()</a></
                                 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">stitch_yuv</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">y0</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">y1</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">R</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">exposure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">wb</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">rs</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+        <span class="name">stitch_yuv</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">y0</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">y1</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">R</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">exposure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">wb</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">rs</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">seam_flow</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span></span><span class="return-annotation">):</span></span>
 
         
     </div>
@@ -272,7 +272,10 @@ device changes. Construct only when <code><a href="#available">available()</a></
 <p><code>wb=True</code> uses the per-channel white-balance exposure match (matches the
 two lenses' colour, ~15ms/frame dearer); the default luma-only match is
 the shipping path. <code>rs</code> = (theta (S,3), t0, scale) enables per-pixel
-rolling-shutter correction (pipeline.Stitcher360.rs_args_for).</p>
+rolling-shutter correction (pipeline.Stitcher360.rs_args_for).
+<code>seam_flow=True</code> morphs the two lenses toward each other inside the
+blend band (optical flow), reconciling parallax on near objects that
+cross the seam (~+30 ms/frame, CPU Farneback).</p>
 </div>
 
 
