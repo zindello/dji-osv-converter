@@ -66,27 +66,4 @@ def rotate_equirect(img: np.ndarray, R: np.ndarray) -> np.ndarray:
     return cv2.remap(img, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
 
 
-def apply_to_maps(cams, R):
-    """Fold a rotation into calibration remap tables (zero per-frame cost).
-
-    For each output pixel we look up which *source* direction it should show
-    after rotation, then copy that pixel's fisheye coordinates from the
-    unrotated table.
-    """
-    from .calibration import CameraMap
-
-    out = []
-    for c in cams:
-        h, w = c.map_x.shape
-        d = directions(h, w) @ R.T
-        u, v = dirs_to_uv(d, w, h)
-        mx = cv2.remap(c.map_x, u, v, cv2.INTER_NEAREST, borderMode=cv2.BORDER_WRAP)
-        my = cv2.remap(c.map_y, u, v, cv2.INTER_NEAREST, borderMode=cv2.BORDER_WRAP)
-        wt = cv2.remap(c.weight, u, v, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
-        vl = cv2.remap(c.valid.astype(np.uint8), u, v, cv2.INTER_NEAREST,
-                       borderMode=cv2.BORDER_WRAP).astype(bool)
-        out.append(CameraMap(mx, my, wt, vl))
-    return out
-
-
-__all__ = ["rot_matrix", "rotate_equirect", "apply_to_maps", "directions", "dirs_to_uv"]
+__all__ = ["rot_matrix", "rotate_equirect", "directions", "dirs_to_uv"]

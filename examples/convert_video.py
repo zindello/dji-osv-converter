@@ -47,13 +47,12 @@ def main() -> int:
                     help="if --exposure is on, use per-channel white-balance matching "
                          "instead of luma-only (~15ms/frame dearer)")
     ap.add_argument("--levelling",
-                    choices=("plain", "rocksteady", "rocksteady_horizon", "horizon", "none"),
+                    choices=("plain", "rocksteady", "rocksteady_horizon", "none"),
                     default="plain",
                     help="plain: raw, follows the camera (matches DJI's default export); "
                          "rocksteady: stabilise (smooth the shake, keep the tumble); "
                          "rocksteady_horizon: lock all axes to a fixed level world view "
-                         "(matches DJI rocksteady+horizonlevelling); "
-                         "horizon: legacy up-lock (broken on motion); none: raw rig frame")
+                         "(matches DJI rocksteady+horizonlevelling); none: raw rig frame")
     ap.add_argument("--software-decode", dest="hardware", action="store_false")
     ap.add_argument("--no-gpu", dest="gpu", action="store_false",
                     help="force the CPU stitch path")

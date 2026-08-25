@@ -23,6 +23,7 @@ from pathlib import Path
 import av
 import numpy as np
 
+from .constants import BITRATE_BPP
 from .pipeline import Stitcher360
 from .decode import iter_pairs, prefetch
 from .spherical import inject_spherical
@@ -89,7 +90,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             maps, band_px=stitcher.seam_overlap_ratio * width,
             width=width, height=height,
             lsc_gain=stitcher.lsc_gains() if lsc else None,
-            rs_tables=stitcher.rs_tables() if use_rs else None)
+            rs_tables=stitcher.rs_tables() if use_rs else None,
+            fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height))
 
     src = av.open(input_osv)
     vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
@@ -102,8 +104,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     vs = out.add_stream(codec, rate=fps)
     vs.width, vs.height = width, height
     vs.pix_fmt = _pick_pix_fmt(codec, bit10)
-    vs.time_base = Fraction(1, fps.numerator // fps.denominator if fps.denominator == 1
-                            else int(round(float(fps))))
+    # One tick per frame at the TRUE rate: 29.97 must not collapse to 1/30 or
+    # the video plays 1.001x fast and drifts against its audio.
+    vs.time_base = Fraction(fps.denominator, fps.numerator)
     # Tag HEVC as hvc1 (parameter sets in the sample description) rather than the
     # libav default hev1 (in-band): macOS QuickLook/Finder/QuickTime only decode
     # hvc1, so hev1 gives no thumbnail and won't play there. DJI uses hvc1.
@@ -115,8 +118,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     if bitrate:
         vs.bit_rate = bitrate
     elif "videotoolbox" in codec:
-        # ~0.25 bpp - matches DJI's ~0.28 bpp for 8K; 0.10 was too soft.
-        vs.bit_rate = int(width * height * float(fps) * 0.25)
+        vs.bit_rate = int(width * height * float(fps) * BITRATE_BPP)
     else:
         vs.options = {"crf": "18"}
 

@@ -1,8 +1,6 @@
-# Core requirements for DJI OSV Converter
-# Note: This project has minimal Python dependencies
-# Required system packages:
-# - ffmpeg (for video extraction and encoding)
-# - DJI Studio (for DualStitcher framework)
-
-# Optional development dependencies:
-# Install with: pip install -e ".[dev]"
+# Runtime dependencies. Everything is read from the OSV file itself -
+# no ffmpeg binary, no DJI Studio installation, no DJI code.
+av>=12          # libavcodec/libavformat in-process (decode + encode + mux)
+numpy>=1.26
+opencv-python>=4.9   # CPU reference stitch, tools
+torch>=2.4      # GPU stitch (CUDA / Apple MPS); torch.compile fuses the hot path

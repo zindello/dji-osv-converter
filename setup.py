@@ -28,10 +28,12 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
-        "protobuf>=3.20.0",
-        "av>=10.0.0",
-        "numpy>=1.24.0",
-        "opencv-contrib-python>=4.5.0",
+        # protobuf intentionally absent: the wire format is decoded by our own
+        # minimal reader (protobuf_wire.py) - no schema, no dependency.
+        "av>=12",
+        "numpy>=1.26",
+        "opencv-python>=4.9",
+        "torch>=2.4",
     ],
     extras_require={
         "dev": [

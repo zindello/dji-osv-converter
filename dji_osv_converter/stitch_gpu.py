@@ -61,7 +61,7 @@ class GpuStitcher:
     def __init__(self, cams: list[CameraMap], band_px: float,
                  width: int, height: int, device: str | None = None,
                  lsc_gain: list[np.ndarray] | None = None,
-                 rs_tables=None):
+                 rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840)):
         if torch is None:
             raise RuntimeError("torch is not installed")
         dev = pick_device(device)
@@ -72,11 +72,10 @@ class GpuStitcher:
         # normalised [-1, 1] sampling grid grid_sample expects, uploaded once.
         self.grid = []
         self.valid = []
+        self.fw, self.fh = fisheye_size          # from the OSV calibration
         for c in cams:
-            sh, sw = c.map_x.shape[0], c.map_x.shape[1]  # output size (H, W)
-            fw = fh = 3840  # fisheye source is square; use its own size
-            gx = torch.from_numpy(2.0 * c.map_x / (fw - 1) - 1.0)
-            gy = torch.from_numpy(2.0 * c.map_y / (fh - 1) - 1.0)
+            gx = torch.from_numpy(2.0 * c.map_x / (self.fw - 1) - 1.0)
+            gy = torch.from_numpy(2.0 * c.map_y / (self.fh - 1) - 1.0)
             self.grid.append(torch.stack([gx, gy], -1).unsqueeze(0).to(self.dev))
             v = torch.from_numpy(c.valid.astype(np.float32))[None, None].to(self.dev)
             self.valid.append(v)
@@ -159,55 +158,6 @@ class GpuStitcher:
             self.rs_J = [torch.from_numpy(np.ascontiguousarray(j)).to(self.dev)
                          for _, j in rs_tables]
 
-    # ---- stages (all operate on (1,3,H,W) float tensors on the device) ----
-
-    def warp(self, fisheye: np.ndarray, i: int) -> "torch.Tensor":
-        src = (torch.from_numpy(np.ascontiguousarray(fisheye))
-               .permute(2, 0, 1).unsqueeze(0).float().to(self.dev))
-        return F.grid_sample(src, self.grid[i], mode="bilinear",
-                             align_corners=True, padding_mode="zeros")
-
-    def match_exposure(self, a, b, max_gain: float = 1.6, maxval: float = 255.0):
-        """Global per-channel gain + smooth spatial gain field.
-
-        All the masking / reductions / log run on the 1/8-downsampled images
-        (the full-res versions were 80% of the cost on MPS); only the final
-        gain multiply is at full res. Mirrors the CPU result to within noise.
-        ``maxval`` is the pixel range (255 for 8-bit, 1023 for 10-bit).
-        """
-        lo, hi = np.log(1 / max_gain), np.log(max_gain)
-        thr = 6.0 * maxval / 255.0                     # "lit" luma threshold
-        a_s = F.avg_pool2d(a, 8)                       # (1,3,H/8,W/8)
-        b_s = F.avg_pool2d(b, 8)
-        lit = ((self.ov8 > 0.5) & (a_s.mean(1, keepdim=True) > thr)
-               & (b_s.mean(1, keepdim=True) > thr)).float()   # (1,1,hs,ws)
-        denom = lit.sum().clamp_min(1)
-        ma = (a_s * lit).sum((0, 2, 3)) / denom
-        mb = (b_s * lit).sum((0, 2, 3)) / denom
-        ratio = torch.where((ma > 1e-3) & (mb > 1e-3), mb / ma, torch.ones_like(ma))
-        ga = ratio.sqrt().clamp(1 / max_gain, max_gain).view(1, 3, 1, 1)
-        a_s, b_s = a_s * ga, b_s / ga   # low-res only; ga is folded into g0/g1 below
-        # smooth spatial log-ratio, diffused at low res then bilinear back up
-        logr = torch.log((a_s / b_s.clamp_min(1e-3)).clamp(1e-3, 1e3)) * lit
-        num = F.avg_pool2d(logr, 4)
-        den = F.avg_pool2d(lit, 4).clamp_min(1e-6)
-        num = F.avg_pool2d(num, 15, 1, 7)
-        den = F.avg_pool2d(den, 15, 1, 7).clamp_min(1e-6)
-        lr = (num / den).clamp(lo, hi)
-        # Fold the global gain into the spatial gain and exp at LOW res, then
-        # upsample the finished gain maps and apply with one multiply each -
-        # removes two full-res exp and two full-res multiplies. The difference
-        # from exp-at-full-res is a smooth <1% gain (no seam).
-        g0 = ga * torch.exp(-0.5 * lr)
-        g1 = (1.0 / ga) * torch.exp(+0.5 * lr)
-        g0 = F.interpolate(g0, size=(self.H, self.W), mode="bilinear", align_corners=False)
-        g1 = F.interpolate(g1, size=(self.H, self.W), mode="bilinear", align_corners=False)
-        return a * g0, b * g1
-
-    def blend(self, a, b):
-        # lerp is a single fused kernel (a*w + b*(1-w) launches four): 23->9 ms
-        return torch.lerp(b, a, self.w3)
-
     def _level_grid(self, R: np.ndarray) -> "torch.Tensor":
         """Full-res sampling grid (1,H,W,2) for rotating the equirect by R.
 
@@ -230,18 +180,6 @@ class GpuStitcher:
         return F.grid_sample(pano, grid, mode="bilinear",
                              align_corners=True, padding_mode="border")
 
-    def stitch(self, f0: np.ndarray, f1: np.ndarray, R: np.ndarray,
-               exposure: bool = False) -> np.ndarray:
-        a = self.warp(f0, 0)
-        b = self.warp(f1, 1)
-        if exposure:
-            a, b = self.match_exposure(a, b)
-        pano = self.blend(a, b)
-        if not np.allclose(R, np.eye(3), atol=1e-9):
-            pano = self.level(pano, R)
-        out = pano.squeeze(0).permute(1, 2, 0).clamp(0, 255).to(torch.uint8)
-        return out.cpu().numpy()
-
     # ---- 10-bit YUV-native path (BT.709 limited range) ----------------------
     #   in : yuv420p10le packed uint16 (H*3/2, W); out: p010le planes (Y, UV).
     #   The whole stitch stays in 4:2:0 YUV - no RGB round-trip. warp, blend and
@@ -250,7 +188,8 @@ class GpuStitcher:
     #   and chroma is never up- then down-sampled (sharper). Luma Y is warped at
     #   full res, chroma UV at half res on the decimated grids.
 
-    def _split_yuv(self, packed: np.ndarray, fh: int = 3840, fw: int = 3840):
+    def _split_yuv(self, packed: np.ndarray):
+        fh, fw = self.fh, self.fw
         t = torch.from_numpy(np.ascontiguousarray(packed)).to(self.dev).float()
         Y = t[:fh].view(1, 1, fh, fw)
         U = t[fh:fh + fh // 4].reshape(1, 1, fh // 2, fw // 2)
@@ -270,7 +209,7 @@ class GpuStitcher:
         fr = (t - i0.float()).unsqueeze(-1)
         thp = th[i0] * (1 - fr) + th[i0 + 1] * fr           # (h,w,3)
         shift = torch.einsum("hwct,hwt->hwc", self.rs_J[i], thp)   # (h,w,2) px
-        shift = (shift * (2.0 / 3839.0)).permute(2, 0, 1).unsqueeze(0)  # normalized
+        shift = (shift * (2.0 / (self.fw - 1))).permute(2, 0, 1).unsqueeze(0)  # normalized
         sh_f = F.interpolate(shift, size=(self.H, self.W), mode="bilinear",
                              align_corners=False).permute(0, 2, 3, 1)
         sh_h = F.interpolate(shift, size=(self.H // 2, self.W // 2), mode="bilinear",
