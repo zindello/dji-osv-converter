@@ -56,6 +56,13 @@ Facts that repeatedly mattered (full detail in docs/):
   them double-corrects and paints arcs across the seam.
 - A complete rolling-shutter subsystem exists behind `video.use_rs = False`;
   it measurably worsens results on this camera — leave it off.
+- **Seam repair** (`seam_flow="auto"`, the default — `docs/seam.md`): the
+  lenses genuinely disagree near the camera. Three band-limited corrections,
+  each detector-gated: model-free photometric match (2-pass — tight-gate
+  estimators have a SELECTION BIAS where mismatch is worst), DIS flow morph
+  (band-limited; full-frame flow made seams worse), and a dynamic seam gated
+  to real parallax (ungated it draws a jumping ring around the sphere).
+  Verify photometric fixes with a mask fixed BEFORE correction.
 - Quality achieved (worst-case clip): rendered jitter 0.027 calm / 0.071
   moving °/frame vs DJI 0.046 / 0.118; horizon lock holds yaw tighter than
   DJI under violent motion.
@@ -108,11 +115,14 @@ libav's pageable NVENC upload (device-frame encode is the roadmap item).
 
 ## Performance state (8K, Apple M3 / MPS)
 
-~60 ms/frame stitch, **~73 ms/frame end-to-end (13.6 fps)** — decode/stitch/
-encode pipelined on threads, the GPU default (`pipeline` auto in `video.py`);
-output verified frame-identical to serial. ~7 s one-time setup (map build +
-torch.compile). Budget in `docs/architecture.md`, per-platform table in
-`docs/benchmarks.md` (tools/benchmark.py is the canonical instrument).
+~60 ms/frame static stitch (~127 ms with the default auto seam repair
+engaged); e2e pipelined **~212 ms/frame sustained under defaults (4.7 fps)**
+or ~73 ms (13.6 fps) with `seam_flow=False` — decode/stitch/encode pipelined
+on threads, the GPU default; static output verified frame-identical to
+serial. Sustained full-clip numbers on the fanless M3 include thermal
+throttling. ~7-8 s one-time setup (map build + torch.compile). Budget in
+`docs/architecture.md`, per-platform table in `docs/benchmarks.md`
+(tools/benchmark.py is the canonical instrument).
 Measured-and-rejected: threading the map build (memory-bound), disk-caching
 maps (885 MB/resolution), batched lens warps (pre-`cat` eats the win), fp16
 planes (MPS grid_sample not dtype-bound), D2H fetch on the encoder thread
@@ -131,6 +141,11 @@ never interpolated (wrap meridian corruption).
 2. **Faster CUDA decode** (see `docs/ROADMAP.md`): per-stream decode
    threads / NVDEC+sw hybrid / decode-to-device; only matters on
    single-NVDEC parts — newer NVIDIA GPUs have 2-5 engines.
+3. **Seam CPU work → builder stage** (V100): the auto seam repair adds
+   ~65 ms of CPU (DIS flow + seam DP + estimator) on the stitch thread;
+   it rides `stitch_yuv_async` already, so moving it into the CUDA
+   pipeline's builder stage recovers the V100's throughput. Re-measure
+   both benchmark rows under merged defaults afterwards.
 
 Known accepted gaps: rim motion blur under extreme tumble (source-limited,
 present in DJI's exports too); libx265 fallback muxes `hev1` not `hvc1`

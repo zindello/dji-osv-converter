@@ -68,6 +68,8 @@ off. Per-platform table in [benchmarks](benchmarks.md); per-stage budget in
 
 - [OSV format reference](osv-format.md) (+ [historical notes](osv-format-notes.md)) — the container, metadata tracks and
   every decoded field
+- [Seam repair](seam.md) — the auto photometric match, parallax flow morph
+  and dynamic seam: why each exists and its measured guardrails
 - [Levelling & stabilisation math](levelling.md) — how each mode works and how
   it was validated
 - [Architecture](architecture.md) — module map, data flow, performance budget

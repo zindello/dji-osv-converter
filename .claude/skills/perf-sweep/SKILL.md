@@ -25,8 +25,12 @@ the user's sign-off in the report. "Looks the same" is not a result.
 ## Current budget (8K, M3/MPS) — docs/architecture.md keeps the live copy
 
 decode 52.6 | upload/split ~11 | warp 13.2 | blend 8.4 | level grid 5.7 |
-level sample 8.2+2.4 | pack+D2H ~10 → stitch ~60 ms; e2e ~73 ms pipelined
-(the GPU default; serial ~104).
+level sample 8.2+2.4 | pack+D2H ~10 → static stitch ~60 ms; the default
+auto seam repair adds ~65 ms CPU (DIS flow 6 + seam DP 10 + estimator 15 +
+gathers/syncs) → ~127 ms stitch. E2e pipelined: ~73 ms with
+`seam_flow=False`, ~212 ms sustained under defaults (fanless-M3 throttling
+included). CUDA numbers live in docs/architecture.md (V100: 36 ms/frame
+pre-seam-merge; re-measure under merged defaults).
 
 ## Measured dead ends — do not retry without new evidence
 

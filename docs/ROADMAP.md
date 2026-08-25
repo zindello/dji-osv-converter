@@ -14,12 +14,21 @@ for the recorded modes and validated on worst-case footage:
   (104 → 73 ms/frame on MPS; output verified frame-identical to serial).
   CPU concurrency measured as a regression in every variant — CPU stays
   serial (see `docs/benchmarks.md` and the notes in `video.py`)
+- ✅ seam repair (`seam_flow="auto"`, the default — `docs/seam.md`):
+  photometric match + band-limited flow morph + parallax-gated dynamic
+  seam, each detector-gated per frame; fixes parallax steps, occlusion
+  dissolve and asymmetric-lighting mismatch at the seam
 
 ## Next
 
 1. **More cameras**: verify the `[MEASURED]` constants (see
    `docs/constants.md`) hold across units as new OSV samples arrive; per-unit
    data (calibration, mount) is already read per file.
+1b. **Seam CPU work → CUDA builder stage**: the auto seam repair adds
+   ~65 ms of CPU on the stitch thread; it already rides
+   `stitch_yuv_async`, so moving flow/DP/estimator into the V100
+   pipeline's builder stage recovers its throughput. Re-measure both
+   benchmark rows under merged defaults afterwards.
 2. **Beyond the NVDEC wall** — segment-parallel NVENC landed
    (`enc_sessions`, 310.9 → 200.7 s on the full base clip) and the V100
    now runs its single decode engine at 94-100%. Device-frame NVENC
