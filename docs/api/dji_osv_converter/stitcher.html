@@ -295,25 +295,36 @@ in columns whose post-morph disagreement says the parallax is real.</p>
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">seam_luma_offsets</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">A</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">B</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">agree</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">lo</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">hi</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">n_lut</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">sigma</span><span class="p">:</span> <span class="nb">float</span></span><span class="return-annotation">) -> <span class="nb">tuple</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>:</span></span>
+        <span class="name">seam_luma_offsets</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">A</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">B</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">inner</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">lo</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">hi</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">n_lut</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">sigma</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">agree_t</span><span class="p">:</span> <span class="nb">float</span></span><span class="return-annotation">) -> <span class="nb">tuple</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>:</span></span>
 
         
     </div>
     <a class="headerlink" href="#seam_luma_offsets"></a>
     
-            <div class="docstring"><p>Empirical inter-lens photometric mismatch, from AGREEING overlap pixels.</p>
+            <div class="docstring"><p>Empirical inter-lens photometric mismatch in the overlap band.</p>
 
-<p>Returns <code>(lut, o)</code>: <code>lut[v]</code> is the median (B - A) as a function of
-luma value v (16 bins, interpolated to <code>n_lut</code> entries), and <code>o</code> a
-per-column residual after the LUT (smoothed along the seam). Split-apply
-both: <code>A += (lut[A]+o)/2</code>, <code>B -= (lut[B]+o)/2</code>, ramped in the band.</p>
+<p>Returns <code>(lut, spatial)</code>: <code>lut[v]</code> is the median (B - A) as a
+function of luma value v (16 bins, interpolated to <code>n_lut</code> entries)
+and <code>spatial</code> a smooth per-pixel residual field at the input's
+resolution. Split-apply: <code>A += (lut[A]+spatial)/2</code>,
+<code>B -= (lut[B]+spatial)/2</code>, ramped inside the band.</p>
 
-<p>Model-free on purpose. Under asymmetric lighting the shed clip measures
-+20/1024 in shadows fading to -3 in highlights - neither a gain (measured
-residual +6) nor an additive-in-linear-light glare (residual +6..10)
-fits; the empirical curve cancels whatever transfer difference the
-in-camera ISP left, by construction. Under even lighting the curve is
-~0 and this is a no-op (worst-case clip: -1..-2.5/1024).</p>
+<p>Two passes, both from pixels where the lenses agree geometrically:</p>
+
+<ol>
+<li>The luma LUT plus a per-column residual, gated tightly (<code>agree_t</code>).</li>
+<li>A smooth 2-D residual field with a 3x WIDER gate. Pass 1's tight gate
+has a SELECTION BIAS: where the mismatch is worst (dark content under
+asymmetric lighting: median |A-B| of 70/1024, 77% of pixels above the
+tight gate) the mismatched pixels are excluded as "disagreeing" and
+the estimate misses them. After pass 1 removes the bulk, the wide
+gate can admit them safely; heavy smoothing keeps real content
+differences (parallax - the dynamic seam's job) out of the field.</li>
+</ol>
+
+<p>Model-free on purpose: gain and additive-linear-glare models were tried
+and measured to under-correct. Under even lighting everything is ~0 and
+this is a no-op (worst-case clip: -1..-2.5/1024).</p>
 </div>
 
 

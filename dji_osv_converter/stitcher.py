@@ -269,48 +269,84 @@ def seam_flow_fields(gray_a: np.ndarray, gray_b: np.ndarray,
     return up(small[0]), up(small[1])
 
 
-def seam_luma_offsets(A: np.ndarray, B: np.ndarray, agree: np.ndarray,
-                      lo: float, hi: float, n_lut: int, sigma: float
-                      ) -> tuple[np.ndarray, np.ndarray]:
-    """Empirical inter-lens photometric mismatch, from AGREEING overlap pixels.
+def seam_luma_offsets(A: np.ndarray, B: np.ndarray, inner: np.ndarray,
+                      lo: float, hi: float, n_lut: int, sigma: float,
+                      agree_t: float) -> tuple[np.ndarray, np.ndarray]:
+    """Empirical inter-lens photometric mismatch in the overlap band.
 
-    Returns ``(lut, o)``: ``lut[v]`` is the median (B - A) as a function of
-    luma value v (16 bins, interpolated to ``n_lut`` entries), and ``o`` a
-    per-column residual after the LUT (smoothed along the seam). Split-apply
-    both: ``A += (lut[A]+o)/2``, ``B -= (lut[B]+o)/2``, ramped in the band.
+    Returns ``(lut, spatial)``: ``lut[v]`` is the median (B - A) as a
+    function of luma value v (16 bins, interpolated to ``n_lut`` entries)
+    and ``spatial`` a smooth per-pixel residual field at the input's
+    resolution. Split-apply: ``A += (lut[A]+spatial)/2``,
+    ``B -= (lut[B]+spatial)/2``, ramped inside the band.
 
-    Model-free on purpose. Under asymmetric lighting the shed clip measures
-    +20/1024 in shadows fading to -3 in highlights - neither a gain (measured
-    residual +6) nor an additive-in-linear-light glare (residual +6..10)
-    fits; the empirical curve cancels whatever transfer difference the
-    in-camera ISP left, by construction. Under even lighting the curve is
-    ~0 and this is a no-op (worst-case clip: -1..-2.5/1024).
+    Two passes, both from pixels where the lenses agree geometrically:
+
+    1. The luma LUT plus a per-column residual, gated tightly (``agree_t``).
+    2. A smooth 2-D residual field with a 3x WIDER gate. Pass 1's tight gate
+       has a SELECTION BIAS: where the mismatch is worst (dark content under
+       asymmetric lighting: median |A-B| of 70/1024, 77% of pixels above the
+       tight gate) the mismatched pixels are excluded as "disagreeing" and
+       the estimate misses them. After pass 1 removes the bulk, the wide
+       gate can admit them safely; heavy smoothing keeps real content
+       differences (parallax - the dynamic seam's job) out of the field.
+
+    Model-free on purpose: gain and additive-linear-glare models were tried
+    and measured to under-correct. Under even lighting everything is ~0 and
+    this is a no-op (worst-case clip: -1..-2.5/1024).
     """
+    h0, w0 = A.shape
     nb = 16
+    clamp = (hi - lo) * 0.05
+    # Everything runs at an extra 4x4 downsample: the outputs are smooth by
+    # construction and full-res numpy here cost 119 ms/frame (blurs and
+    # nanmedian dominated); downsampled it is ~15 ms with the same result.
+    ds = 4
+    h, w = (h0 // ds) * ds, (w0 // ds) * ds
+    blk = lambda x: x[:h, :w].reshape(h // ds, ds, w // ds, ds).mean((1, 3))
+    A = blk(A.astype(np.float32))
+    B = blk(B.astype(np.float32))
+    inner = blk(inner.astype(np.float32)) > 0.99
+    h, w = A.shape
+    agree = inner & (np.abs(A - B) < agree_t)
     a_v, d_v = A[agree], (B - A)[agree]
     edges = np.linspace(lo, hi, nb + 1)
     idx = np.clip(np.digitize(a_v, edges) - 1, 0, nb - 1)
-    lut_b = np.full(nb, np.nan, np.float32)
-    for k in range(nb):
-        m = idx == k
-        if m.sum() > 200:
-            lut_b[k] = np.median(d_v[m])
+    cnt = np.bincount(idx, minlength=nb).astype(np.float32)
+    ssum = np.bincount(idx, weights=d_v, minlength=nb)
+    lut_b = np.where(cnt > 50, ssum / np.maximum(cnt, 1), np.nan)
     centers = (edges[:-1] + edges[1:]) * 0.5
     valid = ~np.isnan(lut_b)
-    clamp = (hi - lo) * 0.05
     if not valid.any():
-        return np.zeros(n_lut, np.float32), np.zeros(A.shape[1], np.float32)
+        return np.zeros(n_lut, np.float32), np.zeros((h0, w0), np.float32)
     lb = np.interp(centers, centers[valid], lut_b[valid]).astype(np.float32)
     lb = cv2.GaussianBlur(lb.reshape(1, -1), (0, 0), 1.5).ravel()
     lut = np.clip(np.interp(np.arange(n_lut, dtype=np.float32), centers, lb,
                             left=lb[0], right=lb[-1]), -clamp, clamp).astype(np.float32)
     res = (B - A) - lut[np.clip(A.astype(np.int64), 0, n_lut - 1)]
-    dif = np.where(agree, res, np.nan)
-    with np.errstate(all="ignore"):
-        o = np.nanmedian(dif, axis=0)
-    o = np.nan_to_num(o, nan=0.0).astype(np.float32)
-    o = cv2.GaussianBlur(o.reshape(1, -1), (0, 0), sigmaX=sigma, sigmaY=0.1).ravel()
-    return lut, np.clip(o, -clamp * 0.75, clamp * 0.75).astype(np.float32)
+    o = (res * agree).sum(0) / np.maximum(agree.sum(0), 1)
+    o = cv2.GaussianBlur(o.reshape(1, -1).astype(np.float32), (0, 0),
+                         sigmaX=sigma / ds, sigmaY=0.1).ravel()
+    o = np.clip(o, -clamp * 0.75, clamp * 0.75)
+
+    res2 = (res - o[None, :]).astype(np.float32)
+    sy = max(2.0, h / 18.0)
+    field = np.zeros_like(res2)
+    # Two refinement iterations: masked Gaussian smoothing dilutes the field
+    # at region edges (pulls toward the surrounding zeros), so re-estimating
+    # on the remaining residual converges it. The field's clamp is 2x the
+    # LUT's: the dark-region mismatch reaches 70/1024 (rim stray light,
+    # present on BOTH sample clips) and a 5% clamp was measured binding.
+    for _ in range(2):
+        r = res2 - field
+        ag = inner & (np.abs(r) < 3.0 * agree_t)
+        num = cv2.GaussianBlur(r * ag, (0, 0), sigmaX=sigma * 1.3 / ds, sigmaY=sy)
+        den = cv2.GaussianBlur(ag.astype(np.float32), (0, 0),
+                               sigmaX=sigma * 1.3 / ds, sigmaY=sy)
+        field = np.clip(field + num / np.maximum(den, 1e-3),
+                        -2.0 * clamp, 2.0 * clamp)
+    spatial = (o[None, :] + field).astype(np.float32)
+    return lut, cv2.resize(spatial, (w0, h0), interpolation=cv2.INTER_LINEAR)
 
 
 def seam_path(cost: np.ndarray, out_w: int) -> np.ndarray:
@@ -410,13 +446,14 @@ def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
     # Veiling-glare correction (constants.SEAM_OFFSET_*): per-column additive
     # offset from geometrically AGREEING pixels, split across the lenses and
     # ramped to zero at the band margins (mirrors the GPU path; 8-bit here).
-    agree = np.abs(ga.astype(np.int16) - gb.astype(np.int16)) < SEAM_OFFSET_AGREE_T / 4.0
-    lut, o = seam_luma_offsets(ga.astype(np.float32), gb.astype(np.float32),
-                               agree, lo=0.0, hi=255.0, n_lut=256,
-                               sigma=SEAM_OFFSET_SIGMA)
+    inner_s = cv2.resize(((weights[r0:r1] > 0.001) & (weights[r0:r1] < 0.999))
+                         .astype(np.float32), ga.shape[::-1]) > 0.5
+    lut, spatial = seam_luma_offsets(ga.astype(np.float32), gb.astype(np.float32),
+                                     inner_s, lo=0.0, hi=255.0, n_lut=256,
+                                     sigma=SEAM_OFFSET_SIGMA,
+                                     agree_t=SEAM_OFFSET_AGREE_T / 4.0)
     h_band, w_full = r1 - r0, warped[0].shape[1]
-    o_full = np.interp(np.arange(w_full), np.linspace(0, w_full - 1, o.size),
-                       o).astype(np.float32)
+    sp_full = cv2.resize(spatial, (w_full, h_band), interpolation=cv2.INTER_LINEAR)
     wc_ = weights[r0:r1]
     inner_rows = np.where(((wc_ > 0.001) & (wc_ < 0.999)).any(axis=1))[0]
     ri0, ri1 = int(inner_rows.min()), int(inner_rows.max())
@@ -429,7 +466,7 @@ def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
     w1 = warped[1].astype(np.float32)
     for wimg, sgn in ((w0, 0.5), (w1, -0.5)):
         gray = cv2.cvtColor(wimg[r0:r1].astype(np.uint8), cv2.COLOR_BGR2GRAY)
-        corr = (lut[gray] + o_full[None, :]) * rp[:, None] * sgn
+        corr = (lut[gray] + sp_full) * rp[:, None] * sgn
         wimg[r0:r1] += corr[..., None]
     warped = [np.clip(w0, 0, 255).astype(np.uint8),
               np.clip(w1, 0, 255).astype(np.uint8)]

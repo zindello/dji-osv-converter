@@ -342,28 +342,38 @@ class GpuStitcher:
         # flow/seam so the mismatch pollutes neither.
         from .constants import SEAM_OFFSET_AGREE_T, SEAM_OFFSET_SIGMA
         from .stitcher import seam_luma_offsets
-        import cv2 as _cv2
-        an = F.avg_pool2d(Ya[:, :, r0:r1], (1, 4))[0, 0].cpu().numpy()
-        bn = F.avg_pool2d(Yb[:, :, r0:r1], (1, 4))[0, 0].cpu().numpy()
-        agree = self._sf_inner4 & (np.abs(an - bn) < SEAM_OFFSET_AGREE_T)
-        lut, o = seam_luma_offsets(an, bn, agree, lo=64.0, hi=940.0, n_lut=1024,
-                                   sigma=SEAM_OFFSET_SIGMA)
+        # ONE device->host sync feeds both the photometric estimator and the
+        # flow grays (a second pooled download mid-pipeline stalls the MPS
+        # queue - measured +100 ms on the whole stitch).
+        an4 = F.avg_pool2d(Ya[:, :, r0:r1], (1, 4))
+        bn4 = F.avg_pool2d(Yb[:, :, r0:r1], (1, 4))
+        ab = torch.cat([an4, bn4], 0).cpu().numpy()
+        an, bn = ab[0, 0], ab[1, 0]
+        lut, spatial = seam_luma_offsets(an, bn, self._sf_inner4,
+                                         lo=64.0, hi=940.0, n_lut=1024,
+                                         sigma=SEAM_OFFSET_SIGMA,
+                                         agree_t=SEAM_OFFSET_AGREE_T)
         lut_t = torch.from_numpy(0.5 * lut).to(self.dev)
-        o_t = torch.from_numpy(0.5 * np.interp(
-            np.arange(W), np.arange(o.size) * 4 + 1.5, o).astype(np.float32)
-        ).to(self.dev)[None, :]
+        sp = torch.from_numpy(0.5 * spatial).to(self.dev)[None, None]
+        sp = F.interpolate(sp, size=(r1 - r0, W), mode="bilinear",
+                           align_corners=False)[0, 0]
         ramp = sf["ramp"]                                 # (bh,1): 0 edges, 1 in band
         for plane, sgn in ((Ya, 1.0), (Yb, -1.0)):
             band = plane[:, :, r0:r1]
-            corr = lut_t[band.clamp(0, 1023).long()] + o_t
+            corr = lut_t[band.clamp(0, 1023).long()] + sp
             plane[:, :, r0:r1] = band + sgn * corr * ramp
 
+        # Flow grays on the CPU from the same pooled data, correction applied
+        # (10-bit centred Y -> 8-bit gray for Farneback; the small pool-order
+        # difference vs pooling the corrected full-res planes is negligible
+        # for flow). Assumes SEAM_FLOW_SCALE == the estimator's 1/4 pooling.
         k = max(int(round(1.0 / SEAM_FLOW_SCALE)), 1)
-        a_s = F.avg_pool2d(Ya[:, :, r0:r1], k)
-        b_s = F.avg_pool2d(Yb[:, :, r0:r1], k)
-        # 10-bit centred Y -> 8-bit gray for Farneback (values 64-940 -> 16-235)
-        ga = (a_s[0, 0] * 0.25).clamp(0, 255).byte().cpu().numpy()
-        gb = (b_s[0, 0] * 0.25).clamp(0, 255).byte().cpu().numpy()
+        cA = an + 0.5 * (lut[np.clip(an.astype(np.int64), 0, 1023)] + spatial)
+        cB = bn - 0.5 * (lut[np.clip(bn.astype(np.int64), 0, 1023)] + spatial)
+        bh4 = (cA.shape[0] // k) * k
+        pr = lambda x: x[:bh4].reshape(bh4 // k, k, x.shape[1]).mean(1)
+        ga = np.clip(pr(cA) * 0.25, 0, 255).astype(np.uint8)
+        gb = np.clip(pr(cB) * 0.25, 0, 255).astype(np.uint8)
         f01s, f10s = seam_flow_small(ga, gb)             # small-res px units
         sh, sw = ga.shape
         bh = r1 - r0
