@@ -12,6 +12,7 @@ both halves for one frame index.
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import av
@@ -52,16 +53,25 @@ def prefetch(gen, size: int = 4):
 
 
 def _hwaccel():
-    """A VideoToolbox hardware-decode context, or None if unavailable.
+    """The platform's hardware-decode context, or None if it has none.
 
-    Hardware decode is ~5x faster than software on Apple silicon and yields
-    10-bit (p010le) frames directly. Falls back silently to software.
+    VideoToolbox on macOS (~5x faster than software on Apple silicon, yields
+    10-bit p010le directly); NVDEC on Linux with an NVIDIA GPU. Falls back
+    silently to software. The probe must be platform-gated: HWAccel
+    construction succeeds even for accelerators this machine doesn't have
+    (the failure only surfaces at codec-open, as a silent software fallback),
+    and callers use ``None`` to decide software-decode threading — a bogus
+    context here means single-threaded software decode.
     """
     try:
         from av.codec.hwaccel import HWAccel
-        return HWAccel(device_type="videotoolbox", allow_software_fallback=True)
     except Exception:
         return None
+    if sys.platform == "darwin":
+        return HWAccel(device_type="videotoolbox", allow_software_fallback=True)
+    if sys.platform == "linux" and Path("/dev/nvidiactl").exists():
+        return HWAccel(device_type="cuda", allow_software_fallback=True)
+    return None
 
 
 def _video_streams(container):
@@ -93,7 +103,11 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
     try:
         sa = _video_streams(ca)[0]
         sb = _video_streams(cb)[1]
-        if not hw:
+        if not hw or sys.platform != "darwin":
+            # Threading must also be on when a hw context exists but ends up
+            # falling back to software at codec-open (hwaccel failures are
+            # silent). Harmless under real NVDEC decode; kept off only for
+            # VideoToolbox, where the shipping M3 path never set it.
             sa.thread_type = sb.thread_type = "AUTO"
         if start > 0:
             fps = float(sa.average_rate)

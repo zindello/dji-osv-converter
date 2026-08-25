@@ -344,7 +344,7 @@ fisheye model (fx~1044 with k1..k4). Both describe the same physical lens.</p>
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">read_osv_calibration</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span>,</span><span class="param">	<span class="n">want_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span></span><span class="return-annotation">) -> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="#CameraCalib">CameraCalib</a></span><span class="p">]</span>:</span></span>
+        <span class="name">read_osv_calibration</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">_local</span><span class="o">.</span><span class="n">Path</span>,</span><span class="param">	<span class="n">want_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span></span><span class="return-annotation">) -> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="#CameraCalib">CameraCalib</a></span><span class="p">]</span>:</span></span>
 
         
     </div>
@@ -361,7 +361,7 @@ fisheye model (fx~1044 with k1..k4). Both describe the same physical lens.</p>
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">read_header_sample</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span></span><span class="return-annotation">) -> <span class="nb">bytes</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
+        <span class="name">read_header_sample</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">_local</span><span class="o">.</span><span class="n">Path</span></span><span class="return-annotation">) -> <span class="nb">bytes</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
 
         
     </div>
@@ -380,7 +380,7 @@ callers can extract other header fields without re-reading the container.</p>
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">read_mount_rotation</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
+        <span class="name">read_mount_rotation</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">_local</span><span class="o">.</span><span class="n">Path</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
 
         
     </div>
