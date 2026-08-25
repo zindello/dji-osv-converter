@@ -23,9 +23,10 @@ from pathlib import Path
 import av
 import numpy as np
 
-from .constants import BITRATE_BPP
+from .constants import (BITRATE_BPP, ENC_CHUNK_SECONDS, PIPELINE_QUEUE_FRAMES,
+                        gpu_engines)
 from .pipeline import Stitcher360
-from .decode import iter_pairs, prefetch
+from .decode import iter_pairs, prefetch, gpu_decode_fmt
 from .spherical import inject_spherical
 from . import stitch_gpu
 
@@ -64,7 +65,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
             seam_flow: bool | str = "auto",
             audio: bool = True, spherical: bool = True, gpu: bool = True,
-            pipeline: bool | None = None, progress=None) -> str:
+            pipeline: bool | None = None, enc_sessions: int | None = None,
+            progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
     ``count`` limits the number of frames (None = whole clip); ``start`` skips
@@ -95,6 +97,15 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     The default "auto" detects per frame what is needed and costs only the
     detector (~16 ms) on frames that need nothing; True forces the full
     stack every frame (~+100 ms); False disables (the static blend).
+
+    ``enc_sessions`` (None = auto): number of parallel NVENC encoder sessions.
+    A single HEVC session runs on ONE of the GPU's NVENC engines; multi-engine
+    parts (e.g. V100: 3) leave the others idle while the session is the
+    pipeline's limiter. >1 encodes GOP-aligned chunks round-robin on
+    independent sessions and re-serializes the closed-GOP bitstreams at mux
+    (B-frames forced off so dts stays monotonic across seams). Auto reads the
+    card's engine count from ``constants.GPU_ENGINES`` (unknown cards: 1);
+    any count still produces correct output (sessions timeslice the engine).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
@@ -115,13 +126,19 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     # place behind this flag for future non-DJI sources.
     use_rs = False
     if use_gpu:
+        # 10-bit YUV in the decoder's cheapest layout: device-resident NVDEC
+        # frames ("cuda", zero decode PCIe traffic), NVDEC-native p010, or
+        # planar. Probed BEFORE the GpuStitcher touches torch/CUDA - the
+        # shared-primary-context hwdevice can't be created afterwards.
+        gpu_fmt = gpu_decode_fmt(hardware, input_osv)
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
             width=width, height=height,
             lsc_gain=stitcher.lsc_gains() if lsc else None,
             rs_tables=stitcher.rs_tables() if use_rs else None,
-            fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height))
+            fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
+            input_fmt=gpu_fmt)
 
     src = av.open(input_osv)
     vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
@@ -171,39 +188,57 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             pkt.stream = a_out
             out.mux(pkt)
 
-    # The GPU path stays 10-bit YUV end to end: decode native yuv420p10le,
-    # stitch on-device, emit p010le planes straight to the encoder - no CPU
-    # colour conversion, no 8-bit truncation. The CPU path stays 8-bit BGR.
-    dec_fmt = "yuv420p10le" if use_gpu else "bgr24"
+    # The GPU path stays 10-bit YUV end to end: decode in the platform's
+    # cheapest 10-bit layout (planar, or NVDEC-native p010), stitch on-device,
+    # emit p010le planes straight to the encoder - no CPU colour conversion,
+    # no 8-bit truncation. The CPU path stays 8-bit BGR.
+    dec_fmt = gpu_fmt if use_gpu else "bgr24"
 
-    def _stitch(idx, f0, f1):
+    def _stitch(idx, f0, f1, gpu_async=False):
         R = stitcher.levelling_for(idx)
         if use_gpu:
             rs = stitcher.rs_args_for(idx) if use_rs else None
-            return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure,
-                                         wb=exposure_wb, rs=rs,
-                                         seam_flow=seam_flow)            # (Y, UV) p010
+            fn = gpu_stitch.stitch_yuv_async if gpu_async else gpu_stitch.stitch_yuv
+            return fn(f0, f1, R, exposure=exposure, wb=exposure_wb, rs=rs,
+                      seam_flow=seam_flow)            # (Y, UV) p010, or a handle
         return stitcher.stitch(f0, f1, frame=idx, exposure=exposure,
                                multiband=multiband, flow=bool(seam_flow))
 
     def _p010_frame(planes) -> "av.VideoFrame":
         Y, UV = planes
         fr = av.VideoFrame(width, height, "p010le")
+        torch = stitch_gpu.torch
         for plane, data in zip(fr.planes, (Y, UV)):
             buf = np.frombuffer(plane, np.uint16).reshape(plane.height, plane.line_size // 2)
-            buf[:, :data.shape[1]] = data
+            if torch is not None:
+                # torch's memcpy releases the GIL; numpy's does not, and an
+                # 88 MB/frame GIL hold here stalls the stitch thread's kernel
+                # launches (measured as the pipeline's limiter on the V100).
+                src = data if isinstance(data, torch.Tensor) else torch.from_numpy(data)
+                torch.from_numpy(buf)[:, :src.shape[1]].copy_(src)
+            else:
+                buf[:, :data.shape[1]] = data
         return fr
 
-    def _encode(pts, result):
+    def _build_frame(result) -> "av.VideoFrame":
         if use_gpu:
-            fr = _p010_frame(result)
+            if isinstance(result, stitch_gpu._AsyncPlanes):
+                # blocks until the side-stream D2H lands, then copies out of
+                # the pinned slot (the copy into the AVFrame happens anyway)
+                fr = _p010_frame(result.planes())
+                result.release()
+            else:
+                fr = _p010_frame(result)
             if vs.pix_fmt != "p010le":
                 # Software encoders (libx265) take planar yuv420p10le; the
                 # p010le->planar repack is lossless (same 10-bit samples).
                 fr = fr.reformat(format=vs.pix_fmt)
-        else:
-            fr = av.VideoFrame.from_ndarray(np.ascontiguousarray(result),
-                                            format="bgr24").reformat(format=vs.pix_fmt)
+            return fr
+        return av.VideoFrame.from_ndarray(np.ascontiguousarray(result),
+                                          format="bgr24").reformat(format=vs.pix_fmt)
+
+    def _encode(pts, result):
+        fr = _build_frame(result)
         fr.pts = pts
         for pkt in vs.encode(fr):
             out.mux(pkt)
@@ -221,32 +256,210 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         pipeline = use_gpu
 
     done = 0
+    multi_enc = False
     if pipeline:
-        enc_q: "queue.Queue" = queue.Queue(maxsize=4)
+        enc_q: "queue.Queue" = queue.Queue(maxsize=PIPELINE_QUEUE_FRAMES)
         enc_done, enc_err = object(), []
 
-        def _encoder():
-            try:
-                while True:
-                    item = enc_q.get()
-                    if item is enc_done:
-                        return
-                    _encode(*item)
-            except Exception as e:                 # noqa: BLE001
-                enc_err.append(e)
+        # On CUDA the frame build (event wait + pinned->AVFrame copy,
+        # ~18 ms) and the encode call (~35 ms - libav nvenc re-uploads the
+        # frame internally) are each big enough to deserve their own stage:
+        # stitch -> build -> encode+mux on three threads (measured 59 -> ~40
+        # ms/frame). Elsewhere the two-thread layout stays (the M3 numbers
+        # were recorded with it, and its encode path is the lighter one).
+        gpu_async = use_gpu and gpu_stitch.async_d2h
+        n_sess = enc_sessions
+        if n_sess is None:
+            if gpu_async and "nvenc" in codec:
+                # Per-card engine count (constants.GPU_ENGINES) - one HEVC
+                # session saturates one NVENC engine.
+                name = stitch_gpu.torch.cuda.get_device_name(gpu_stitch.dev)
+                n_sess = max(1, gpu_engines(name)["nvenc"])
+            else:
+                n_sess = 1
+        multi_enc = gpu_async and n_sess > 1 and "nvenc" in codec
+        stages = []
+        if multi_enc:
+            # Segment-parallel NVENC: one HEVC session occupies ONE NVENC
+            # engine (the V100 has three; a lone session pegs its engine at
+            # ~59 ms/frame on real content while the others idle). Frames go
+            # to n_sess independent sessions in GOP-sized chunks; each chunk
+            # is a closed GOP (fresh session => leading IDR, B-frames off so
+            # dts stays monotonic across seams) and the muxer re-serializes
+            # chunks in order. Sessions with identical settings emit
+            # identical SPS/PPS, so one extradata serves the whole track.
+            chunk = max(1, int(round(ENC_CHUNK_SECONDS * float(fps))))
+            sess_qs = [queue.Queue(maxsize=chunk + 2 * PIPELINE_QUEUE_FRAMES)
+                       for _ in range(n_sess)]
+            mux_q: "queue.Queue" = queue.Queue()
 
-        enc_thread = threading.Thread(target=_encoder, daemon=True)
-        enc_thread.start()
+            def _builder():
+                try:
+                    while True:
+                        item = enc_q.get()
+                        if item is enc_done:
+                            for q in sess_qs:
+                                q.put(enc_done)
+                            return
+                        pts, result = item
+                        fr = _build_frame(result)
+                        fr.pts = pts
+                        sess_qs[(pts // chunk) % n_sess].put(fr)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+                    for q in sess_qs:
+                        q.put(enc_done)
+
+            def _new_session():
+                ctx = av.CodecContext.create(codec, "w")
+                ctx.width, ctx.height = width, height
+                ctx.pix_fmt = vs.pix_fmt
+                ctx.time_base = vs.time_base
+                ctx.framerate = fps
+                ctx.bit_rate = vs.bit_rate
+                ctx.options = {"bf": "0", "forced-idr": "1"}
+                ctx.flags |= av.codec.context.Flags.global_header
+                return ctx
+
+            def _session(k):
+                # ONE persistent session per worker - NVENC session creation
+                # costs enough that churning one per chunk measurably LOSES
+                # (~20 ms/frame on the short benchmark). Chunk starts get a
+                # forced IDR instead, which keeps every chunk closed; with
+                # bf=0 the packet stream is in pts order, so a packet from a
+                # later chunk proves the earlier ones are complete.
+                pending: dict[int, list] = {}
+
+                def emit_before(cid):
+                    for c in sorted(c for c in pending if c < cid):
+                        mux_q.put((c, pending.pop(c)))
+
+                try:
+                    ctx = _new_session()
+                    while True:
+                        fr = sess_qs[k].get()
+                        if fr is enc_done:
+                            for pkt in ctx.encode(None):
+                                pending.setdefault(pkt.pts // chunk, []).append(pkt)
+                            emit_before(float("inf"))
+                            mux_q.put((enc_done, bytes(ctx.extradata or b"")))
+                            return
+                        if fr.pts % chunk == 0:
+                            # chunk start -> forced IDR (closed chunk)
+                            fr.pict_type = av.video.frame.PictureType.I
+                        for pkt in ctx.encode(fr):
+                            cid = pkt.pts // chunk
+                            pending.setdefault(cid, []).append(pkt)
+                            emit_before(cid)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+                    mux_q.put((enc_done, b""))
+
+            def _muxer():
+                try:
+                    expected, buf, ends, xset = 0, {}, 0, False
+
+                    def drain():
+                        nonlocal expected
+                        while expected in buf:
+                            for pkt in buf.pop(expected):
+                                pkt.stream = vs
+                                out.mux(pkt)
+                            expected += 1
+
+                    while ends < n_sess:
+                        cid, payload = mux_q.get()
+                        if cid is enc_done:
+                            ends += 1
+                            if not xset and payload:
+                                vs.codec_context.extradata = payload
+                                xset = True
+                            continue
+                        buf[cid] = payload
+                        drain()
+                    drain()
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+
+            stages = [_builder] + \
+                [(lambda k=k: _session(k)) for k in range(n_sess)] + [_muxer]
+        elif gpu_async:
+            frame_q: "queue.Queue" = queue.Queue(maxsize=PIPELINE_QUEUE_FRAMES)
+
+            def _builder():
+                try:
+                    while True:
+                        item = enc_q.get()
+                        if item is enc_done:
+                            frame_q.put(enc_done)
+                            return
+                        pts, result = item
+                        fr = _build_frame(result)
+                        fr.pts = pts
+                        frame_q.put(fr)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+                    frame_q.put(enc_done)
+
+            def _encoder():
+                try:
+                    while True:
+                        fr = frame_q.get()
+                        if fr is enc_done:
+                            return
+                        for pkt in vs.encode(fr):
+                            out.mux(pkt)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+
+            stages = [_builder, _encoder]
+        else:
+            def _encoder():
+                try:
+                    while True:
+                        item = enc_q.get()
+                        if item is enc_done:
+                            return
+                        _encode(*item)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+
+            stages = [_encoder]
+
+        threads = [threading.Thread(target=fn, daemon=True) for fn in stages]
+        for t in threads:
+            t.start()
+        # On CUDA the downstream threads receive async handles: the packed
+        # planes travel device->pinned-host on a side stream while the
+        # default stream is already stitching the next frame (MPS cannot -
+        # one kernel queue - so it keeps the synchronous fetch).
+        pool = gpu_stitch.input_pool() if use_gpu else None
+
+        def _feed(item):
+            # Bounded put that keeps checking for a dead consumer: a stage
+            # thread that died leaves its queue full forever, and a plain
+            # put() would deadlock the producer instead of surfacing the
+            # error (seen live when a builder exception killed the run).
+            while True:
+                if enc_err:
+                    raise enc_err[0]
+                try:
+                    enc_q.put(item, timeout=0.5)
+                    return
+                except queue.Full:
+                    continue
+
         for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
-                                               fmt=dec_fmt, hardware=hardware), size=4):
-            enc_q.put((done, _stitch(idx, f0, f1)))
+                                               fmt=dec_fmt, hardware=hardware,
+                                               alloc=pool.alloc if pool else None),
+                                    size=PIPELINE_QUEUE_FRAMES):
+            _feed((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
             done += 1
             if progress:
                 progress(done, n_frames)
-            if enc_err:
-                raise enc_err[0]
         enc_q.put(enc_done)
-        enc_thread.join()
+        for t in threads:
+            t.join()
         if enc_err:
             raise enc_err[0]
     else:
@@ -257,8 +470,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             if progress:
                 progress(done, n_frames)
 
-    for pkt in vs.encode():   # flush encoder
-        out.mux(pkt)
+    if not multi_enc:
+        for pkt in vs.encode():   # flush encoder (unused in multi-session)
+            out.mux(pkt)
     out.close()
     src.close()
 

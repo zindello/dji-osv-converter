@@ -207,6 +207,71 @@ TRC_GAMMA_FALLBACK = 2.2
 BITRATE_BPP = 0.25
 
 
+# ---- Pipeline concurrency (CUDA) --------------------------------------------
+# None of these are readable from hardware or the OSV; they are the knobs of
+# the threaded GPU pipeline, sized on the V100 box (docs/architecture.md).
+
+# Per-card video-engine counts. NVML exposes no engine-count query, so this
+# is the dial to turn when the pipeline meets a new GPU: add a row, and the
+# session-parallel encoder (and any future decode/batch tooling) picks it up.
+# Keys match against torch's device name by substring, longest key first
+# (so "L40" wins over "L4" on an L40S). Unknown cards get GPU_ENGINES_DEFAULT
+# - deliberately conservative (single session = the pre-parallel behaviour).
+#
+# nvenc: encode engines - one HEVC session saturates exactly one, so
+#        convert() runs this many parallel sessions by default.
+# nvdec: decode engines - one OSV needs at most 2 decoder instances (two
+#        fisheye streams share one file); the count records whether the
+#        card can decode clips in parallel (batching) beyond that.
+GPU_ENGINES = {
+    # [MEASURED] on this project's V100 box: a lone NVENC session capped at
+    # exactly 33% aggregate (1 of 3 engines at 100%); NVDEC saturates at
+    # ~25 ms/fisheye-pair with both decode workers sharing one engine.
+    # Confirmed independently by tools/gpu_engine_probe.py.
+    "V100": {"nvenc": 3, "nvdec": 1},
+    # Measured rows only. To add a card, run tools/gpu_engine_probe.py on it
+    # (self-contained, synthetic data - no OSV needed) and paste the row it
+    # prints, keeping the probe's scaling table in the commit message.
+}
+# [ASSUMED] Unknown card: one session of each - correct everywhere, fast
+# nowhere special. Add a GPU_ENGINES row to turn the dial up.
+GPU_ENGINES_DEFAULT = {"nvenc": 1, "nvdec": 1}
+
+
+def gpu_engines(device_name: str | None) -> dict:
+    """Engine counts for a CUDA device name.
+
+    Longest key first, and the key must not be followed by a further digit,
+    so "A100-SXM4" matches A100 but "RTX A1000" does not, and "L40S" matches
+    L40 rather than L4.
+    """
+    import re
+    if device_name:
+        for key in sorted(GPU_ENGINES, key=len, reverse=True):
+            if re.search(re.escape(key) + r"(?!\d)", device_name):
+                return GPU_ENGINES[key]
+    return GPU_ENGINES_DEFAULT
+
+# [ASSUMED] Seconds of video per closed GOP chunk in session-parallel encode.
+# Each chunk opens with a forced IDR: shorter chunks spread load faster but
+# cost bitrate (2 s measured ~+6% file size vs a single session's ~8 s GOP).
+ENC_CHUNK_SECONDS = 2.0
+
+# [ASSUMED] Bounded-queue depths, sized so no stage starves while memory
+# stays modest: stage handoff queues (frames), per-decode-worker queues
+# (fisheye frames), pinned H2D staging slots (>= prefetch chain: 2/pair x 4
+# prefetched + 2 x 3 worker-queued + in-flight), pinned D2H slots
+# (> stage queue + frames in flight on the copy stream).
+PIPELINE_QUEUE_FRAMES = 4
+DECODE_WORKER_QUEUE = 3
+PINNED_INPUT_SLOTS = 16
+ASYNC_D2H_SLOTS = 6
+
+# [ASSUMED] Packets fed to the hevc_cuvid probe before concluding it cannot
+# decode this file (the decoder has multi-packet latency before frame 1).
+CUVID_PROBE_PACKETS = 64
+
+
 __all__ = [
     "K_PLAIN", "C_UP_FORMAT", "QUAT_ORDER", "WORLD_UP", "WORLD_FWD",
     "EXTRINSIC_SOURCE", "EXTRINSIC_ORDER",
@@ -218,4 +283,8 @@ __all__ = [
     "SEAM_OFFSET_AGREE_T", "SEAM_OFFSET_SIGMA", "SEAM_AUTO_PHOTO_T",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
+    "GPU_ENGINES", "GPU_ENGINES_DEFAULT", "gpu_engines",
+    "ENC_CHUNK_SECONDS", "PIPELINE_QUEUE_FRAMES",
+    "DECODE_WORKER_QUEUE", "PINNED_INPUT_SLOTS", "ASYNC_D2H_SLOTS",
+    "CUVID_PROBE_PACKETS",
 ]

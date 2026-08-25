@@ -53,9 +53,11 @@ fisheye pair up and one packed frame down per frame.
 | level grid build (fused, separable) | 5.7 |
 | level grid_sample | 8.2 + 2.4 decimate |
 | pack (fused) + uint16 device→host | ~10 |
-| **stitch total** | **~59** |
-| end-to-end, pipelined (default on GPU) | **~73 (13.6 fps)** |
-| end-to-end, serial (`pipeline=False`) | ~104 (9.6 fps) |
+| **stitch total (static blend, `seam_flow=False`)** | **~59** |
+| stitch with the auto seam repair engaged (the default) | ~127 |
+| end-to-end, pipelined, `seam_flow=False` | ~73 (13.6 fps) |
+| end-to-end, pipelined, defaults | ~212 sustained (4.7 fps) |
+| end-to-end, serial (`pipeline=False`, `seam_flow=False`) | ~104 (9.6 fps) |
 
 Decode/stitch/encode run on three threads on the GPU path (decode prefetch +
 encoder queue in `video.py`); decode fully hides under the stitch, and the
@@ -95,16 +97,88 @@ Notable implementation facts:
   is 40.5 compute + 6 upload + 7 D2H + ~5 launch overhead; on MPS the
   transfers share the one kernel queue and cannot overlap compute. Going
   faster on this hardware means less work per frame, not more parallelism.
-  On CUDA the copy engines CAN overlap (pinned memory + `non_blocking` on
-  side streams) — an open V100-phase item worth ~13 ms.
+- On CUDA the copy engines DO overlap: `stitch_yuv_async` packs on-device
+  and runs the D2H on a dedicated stream into a pooled pinned slot; the
+  encoder thread blocks on a per-frame event and recycles the slot. On the
+  V100 (PCIe, where pageable D2H alone was ~26 ms at 8K) this took the
+  stitch loop 103 → 50 ms/frame, output bit-identical; the pipeline path
+  uses it automatically on CUDA (`async_d2h`). Input-side H2D pinning was
+  measured and skipped: staging the copy on the stitch thread makes it a
+  wash (~4 ms) — it only pays if the staging copy moves to the decode
+  thread (open item, matters once decode stops being the V100 bottleneck).
+- CUDA decode is **decode-to-device** (`gpu_decode_fmt` → `"cuda"`): the
+  hwdevice is created with `primary_ctx=1` + `is_hw_owned=True`, so NVDEC
+  frames stay ON the GPU in torch's own context — 13 ms/frame, 25 ms/pair
+  at engine speed, zero decode PCIe traffic; the planes are wrapped into
+  torch via `__cuda_array_interface__` and cloned off the surface pool on
+  a per-worker stream. How the feeding matters: the same engine fed
+  frame-at-a-time through the generic hwaccel path ran 55 ms/frame at 15%
+  engine utilization; libavcodec's `hevc_cuvid` (the "p010le" fallback
+  path) saturates it at 22.5. Two traps encoded in `decode.py`: the
+  probe container is held open for the process lifetime (FFmpeg sets
+  primary-context scheduling flags at hwdevice creation; releasing the
+  retain and letting torch re-create the context with different flags
+  breaks all later hwdevice creations with EOPNOTSUPP), and hwaccel probes
+  must be platform-gated (a VideoToolbox probe on Linux "succeeds", then
+  falls back to software silently WITHOUT threading — the original
+  590 ms/frame single-thread trap).
+- The Python GIL is a pipeline stage: an 88 MB/frame numpy copy in the
+  encoder thread (pinned slot → AVFrame) holds the GIL and stalls the
+  stitch thread's kernel launches — measured as THE limiter once decode
+  was fast (e2e stuck at ~95 ms with every engine <50% busy). numpy's
+  memcpy does not release the GIL; torch's does. `_p010_frame` copies via
+  torch: e2e 95 → 53 ms/frame.
+- The CUDA pipeline is three stages (stitch → frame-build → encode+mux):
+  the NVENC `encode()` call costs ~35 ms with the engine only ~30% busy —
+  most of it is libav's internal pageable upload of the frame we just
+  downloaded — so it gets a thread of its own, separate from the ~18 ms
+  frame-build copy: e2e 53 → 46 ms/frame (22 fps), the V100's shipping
+  number. Stage decomposition at 46 ms: D2H wait 0.5 (fully hidden),
+  build 18, encode+mux 35, decode 25/pair. MPS keeps the two-thread
+  layout its numbers were recorded with.
+- Device-frame NVENC encode needs NO PyAV fork — stock PyAV passes any
+  `cuda`-format frame straight through to the encoder, and reusable
+  CUDA frames can be minted by decoding a tiny generated clip
+  device-resident (see `tools/hwframe_encode_probe.py`). Measured on
+  the V100 it is a 2.7× LOSS (55 vs 20 ms/call): Volta's per-frame
+  nvEncMapInputResource/unmap costs more than the upload it saves, and
+  nvenc.c routes encoder-pool frames through the identical register/map
+  path, so no API (fork or otherwise) can do better on this silicon.
+  Re-probe on Turing+ before assuming either way.
+- One NVENC session runs on ONE engine: before segment-parallel encode
+  the full base clip showed the encoder at exactly 33% in every sample —
+  the V100's three engines with one pegged (~59 ms/frame on real
+  content) and two idle. `enc_sessions` (default 3 on CUDA+NVENC) fixes
+  it: three PERSISTENT sessions each encode every third ~2 s chunk, a
+  forced IDR (`pict_type=I` + `forced-idr`) opens each chunk so chunks
+  stay closed, `bf=0` keeps dts monotonic across seams, and a reorder
+  muxer re-serializes chunks into the single hvc1 track (all sessions
+  emit identical SPS/PPS). Sessions must be persistent — creating one
+  per chunk was measured as a ~20 ms/frame loss. Cost: keyframe every
+  2 s instead of ~8 s, ~+6% file size, encode quality 39-40 dB PSNR
+  against the single-session encode (normal GOP-layout noise; the
+  stitched frames are bit-identical). Full base clip: 310.9 → 200.7 s
+  (36 ms/frame, 28 fps, 0.79× realtime), engines at GPU 80% / NVENC 66%
+  / **NVDEC 94-100% — the single decode engine is now the hardware
+  wall**. Short benchmark windows under-report multi-session (drain
+  tail); measure ≥450 frames.
 - One-time setup is ~6.5 s: ~3.5 s map build + ~3 s `torch.compile`. The
   radial polynomial is Horner-evaluated (bit-identical maps, 2.4× faster than
   the naive `theta**n` form). Threading the two lens builds was **measured as
   a loss** (2.0 → 2.9 s — the build is memory-bandwidth-bound); a raw disk
   cache of the maps was rejected at 885 MB per resolution for a ~2 s saving.
 - Cross-device parity: the same frame stitched on MPS vs torch-CPU differs by
-  at most 0.13 of a 10-bit level (interpolation rounding) — the math is
-  device-independent, which is the CUDA-readiness guarantee short of the box.
+  at most 0.13 of a 10-bit level (interpolation rounding); CUDA vs torch-CPU
+  is bit-identical with identity levelling, and with a live rotation 97% of
+  pixels are bit-equal and 3 of 29.5M exceed 1 LSB (Triton's sin/cos in the
+  compiled level grid — same class of effect as the documented ≤0.0004%
+  MPS recompute delta). The math is device-independent in practice.
+- V100 (CUDA 13 dropped Volta): the box needs the cu126 torch wheel —
+  `pip install torch==2.13.0+cu126 --index-url
+  https://download.pytorch.org/whl/cu126` after requirements (plain
+  `==2.13.0` is "satisfied" by the kernel-less +cu130 wheel and every op
+  fails at runtime). `torch.compile` also takes ~28 s there (vs ~3 s MPS),
+  the bulk of the ~32 s setup.
 - Encoding is portable: `convert()` auto-selects VideoToolbox → NVENC →
   libx265, with the packed→planar repack handled losslessly for software
   encoders (libx265 muxes as `hev1`, cosmetic: QuickLook-only issue, and macOS

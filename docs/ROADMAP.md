@@ -17,12 +17,45 @@ for the recorded modes and validated on worst-case footage:
 
 ## Next
 
-1. **CUDA validation** on discrete GPUs (V100/P100) — the stitch is already
-   device-agnostic torch and the pipeline auto-enables; needs profiling,
-   NVENC, and a benchmark row.
-2. **More cameras**: verify the `[MEASURED]` constants (see
+1. **More cameras**: verify the `[MEASURED]` constants (see
    `docs/constants.md`) hold across units as new OSV samples arrive; per-unit
    data (calibration, mount) is already read per file.
+2. **Beyond the NVDEC wall** — segment-parallel NVENC landed
+   (`enc_sessions`, 310.9 → 200.7 s on the full base clip) and the V100
+   now runs its single decode engine at 94-100%. Device-frame NVENC
+   encode was **prototyped and measured — no PyAV fork needed** (stock
+   PyAV passes `cuda`-format frames through to NVENC; frames are minted
+   by decoding a tiny generated clip with `is_hw_owned=True` and
+   torch-writing their device pointers), but on Volta it LOSES 2.7×:
+   the per-frame `nvEncMapInputResource` cost exceeds the saved upload,
+   and encoder-pool frames (what a fork would add) ride the same
+   register/map path in nvenc.c. Run `tools/hwframe_encode_probe.py`
+   on any newer GPU (Turing+ maps cheaply) — if it reports a win, wire
+   the mint into `convert()`'s builder stage. The other lever is
+   multi-clip batching on multi-NVDEC cards (Ampere+ have 2-5 decode
+   engines; the V100's single engine caps aggregate throughput no
+   matter the arrangement). Floors underneath: ~25 ms NVDEC pair,
+   ~10.5 ms GPU compute.
+
+## Done (2026-08-25): CUDA validation + optimization on the V100
+
+The stitch itself ran unmodified (bit-parity with torch-CPU verified on
+real frames) — all the work was video I/O, each step verified
+bit-identical, landing at **46 ms/frame e2e (22 fps), 1.6× the M3**:
+a platform-gated hwaccel probe (the VideoToolbox probe silently
+gave single-threaded software decode on Linux: 590 ms/frame),
+decode-to-device NVDEC (`primary_ctx` + `is_hw_owned`: frames stay on
+the GPU in torch's context, 25 ms/pair — the generic hwaccel path left
+the engine 85% idle; `hevc_cuvid` + p010 ingest remains as the fallback
+tier; CUDA decode lives in `nvdec.py`), async D2H through pinned slots
+on a side stream, GIL-releasing torch copies in the encoder thread
+(numpy's 88 MB/frame memcpy held the GIL and throttled kernel launches:
+e2e 95 → 53 from that alone), and a three-stage CUDA pipeline (stitch →
+frame-build → encode+mux: 53 → 46; the ~35 ms NVENC call is mostly
+libav's internal pageable re-upload, hence the device-frame-encode item
+above). Output validated against DJI per `docs/validation.md`; NVENC
+auto-selected and verified (hvc1 + spherical metadata + audio). Numbers
+in `docs/benchmarks.md`.
 
 ## History
 
