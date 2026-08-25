@@ -59,9 +59,10 @@ pano = st.stitch(f0, f1, frame=0)      # equirectangular BGR (CPU reference path
 
 ## Performance
 
-8K 10-bit on an Apple M3 (MPS): **~7 s setup, then ~73 ms per frame
-(13.6 fps)**. Per-platform table in [benchmarks](benchmarks.md); per-stage
-budget in [architecture](architecture.md).
+8K 10-bit on an Apple M3 (MPS): **~8 s setup, then ~212 ms per frame
+(4.7 fps)** with the default auto seam repair; ~73 ms (13.6 fps) with it
+off. Per-platform table in [benchmarks](benchmarks.md); per-stage budget in
+[architecture](architecture.md).
 
 ## Documentation
 

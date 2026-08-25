@@ -12,9 +12,16 @@ pipelined on GPU, serial on CPU).
 
 | platform | GPU/CPU | setup | per frame |
 |---|---|---|---|
-| Apple M3 (macOS 15) | GPU | ~7 s | **73 ms (13.6 fps)** |
+| Apple M3 (macOS 15) | GPU | ~8 s | **212 ms (4.7 fps)** |
 | Apple M3 (macOS 15) | CPU | 3 s | 972 ms (1.0 fps) |
 | NVIDIA V100 (Linux) | GPU | *pending* | *pending* |
+
+The default includes the auto seam repair (photometric match + parallax
+flow + dynamic seam), which engages on nearly all real handheld footage —
+the operator is close to the camera, so the lenses genuinely disagree at
+the seam. `seam_flow=False` restores the static-blend fast path: **73 ms
+(13.6 fps)** on the M3. Sustained full-clip numbers on the fanless M3
+include thermal throttling; short bursts run faster.
 
 ## Adding a row
 
