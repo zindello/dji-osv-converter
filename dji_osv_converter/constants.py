@@ -131,7 +131,9 @@ SEAM_FLOW_MAX_SHIFT_PX = 60.0 # clamp on the per-pixel morph (full-res px)
 # path is routed per column through the morphed band (DP, |dy| <= 1 per
 # step) and the blend is a NARROW feather around that path instead.
 SEAM_DYN_FEATHER_PX = 24.0    # cross-fade width around the dynamic seam
-SEAM_DYN_COLS = 1920          # path solved at this many columns, upsampled
+SEAM_DYN_COLS = 960           # path solved at this many columns (8 px/col at
+                              # 8K, Gaussian-smoothed after), upsampled;
+                              # 1920 doubled the DP cost for no visible gain
 SEAM_DYN_SIGMA = 9.0          # path smoothing sigma (in path-grid columns)
 # The narrow cut is GATED to columns where the lenses actually disagree
 # (real parallax): everywhere else the static wide fade is used unchanged -

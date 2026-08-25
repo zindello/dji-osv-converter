@@ -233,8 +233,11 @@ def seam_flow_small(gray_a: np.ndarray, gray_b: np.ndarray
     """
     from .constants import SEAM_FLOW_SIGMA_ACROSS, SEAM_FLOW_SIGMA_ALONG
     sh, sw = gray_a.shape
-    f01 = cv2.calcOpticalFlowFarneback(gray_a, gray_b, None, 0.5, 3, 25, 3, 7, 1.5, 0)
-    f10 = cv2.calcOpticalFlowFarneback(gray_b, gray_a, None, 0.5, 3, 25, 3, 7, 1.5, 0)
+    # DIS (fast preset) over Farneback: 5.6 vs 24.8 ms for the pair on the
+    # standard band, with equal-or-better warp residual (27.69 vs 27.78).
+    dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_FAST)
+    f01 = dis.calc(gray_a, gray_b, None)
+    f10 = dis.calc(gray_b, gray_a, None)
     gxs, gys = np.meshgrid(np.arange(sw, dtype=np.float32),
                            np.arange(sh, dtype=np.float32))
     back = cv2.remap(f10, gxs + f01[..., 0], gys + f01[..., 1],
