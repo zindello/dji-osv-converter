@@ -53,13 +53,10 @@ class TestFramePlanes(unittest.TestCase):
 
 
 class TestGpuEngines(unittest.TestCase):
-    def test_known_cards_and_longest_match(self):
+    def test_measured_card(self):
         from dji_osv_converter.constants import gpu_engines
         self.assertEqual(gpu_engines("Tesla V100-PCIE-16GB")["nvenc"], 3)
         self.assertEqual(gpu_engines("Tesla V100-PCIE-16GB")["nvdec"], 1)
-        # "L40S" must match L40, not L4
-        self.assertEqual(gpu_engines("NVIDIA L40S")["nvenc"], 3)
-        self.assertEqual(gpu_engines("NVIDIA L4")["nvenc"], 2)
 
     def test_unknown_card_is_conservative(self):
         from dji_osv_converter.constants import GPU_ENGINES_DEFAULT, gpu_engines
@@ -68,11 +65,27 @@ class TestGpuEngines(unittest.TestCase):
         self.assertEqual(gpu_engines(None), GPU_ENGINES_DEFAULT)
         self.assertEqual(GPU_ENGINES_DEFAULT["nvenc"], 1)
 
-    def test_digit_boundary(self):
-        from dji_osv_converter.constants import GPU_ENGINES_DEFAULT, gpu_engines
-        # "RTX A1000" must NOT match the A100 row
-        self.assertEqual(gpu_engines("NVIDIA RTX A1000"), GPU_ENGINES_DEFAULT)
-        self.assertEqual(gpu_engines("NVIDIA A100-SXM4-40GB")["nvdec"], 5)
+    def test_matcher_longest_key_and_digit_boundary(self):
+        # matcher semantics tested with injected keys - the shipped table
+        # carries measured rows only
+        from dji_osv_converter import constants
+        from dji_osv_converter.constants import gpu_engines
+        injected = {"L4": {"nvenc": 2, "nvdec": 4},
+                    "L40": {"nvenc": 3, "nvdec": 3},
+                    "A100": {"nvenc": 0, "nvdec": 5}}
+        saved = dict(constants.GPU_ENGINES)
+        constants.GPU_ENGINES.update(injected)
+        try:
+            # longest key wins: L40S is L40, not L4
+            self.assertEqual(gpu_engines("NVIDIA L40S")["nvenc"], 3)
+            self.assertEqual(gpu_engines("NVIDIA L4")["nvenc"], 2)
+            # digit boundary: RTX A1000 must not match A100
+            self.assertEqual(gpu_engines("NVIDIA RTX A1000"),
+                             constants.GPU_ENGINES_DEFAULT)
+            self.assertEqual(gpu_engines("NVIDIA A100-SXM4-40GB")["nvdec"], 5)
+        finally:
+            constants.GPU_ENGINES.clear()
+            constants.GPU_ENGINES.update(saved)
 
 
 class TestFrameIndex(unittest.TestCase):

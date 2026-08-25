@@ -158,17 +158,11 @@ GPU_ENGINES = {
     # [MEASURED] on this project's V100 box: a lone NVENC session capped at
     # exactly 33% aggregate (1 of 3 engines at 100%); NVDEC saturates at
     # ~25 ms/fisheye-pair with both decode workers sharing one engine.
+    # Confirmed independently by tools/gpu_engine_probe.py.
     "V100": {"nvenc": 3, "nvdec": 1},
-    # [ASSUMED] from NVIDIA's public Video Codec SDK support matrix -
-    # unverified by this codebase; verify with a utilization log
-    # (nvidia-smi -q -d UTILIZATION during a convert) before trusting.
-    "P100": {"nvenc": 3, "nvdec": 1},
-    "T4": {"nvenc": 1, "nvdec": 2},
-    "A10": {"nvenc": 1, "nvdec": 2},
-    "A100": {"nvenc": 0, "nvdec": 5},   # no NVENC: falls back to libx265
-    "L4": {"nvenc": 2, "nvdec": 4},
-    "L40": {"nvenc": 3, "nvdec": 3},
-    "H100": {"nvenc": 0, "nvdec": 7},   # no NVENC
+    # Measured rows only. To add a card, run tools/gpu_engine_probe.py on it
+    # (self-contained, synthetic data - no OSV needed) and paste the row it
+    # prints, keeping the probe's scaling table in the commit message.
 }
 # [ASSUMED] Unknown card: one session of each - correct everywhere, fast
 # nowhere special. Add a GPU_ENGINES row to turn the dial up.
