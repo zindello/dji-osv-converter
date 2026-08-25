@@ -130,9 +130,10 @@ def main() -> None:
     print(f"stitch   : {stitch_ms:.1f} ms/frame")
     if e2e_ms:
         print(f"e2e      : {e2e_ms:.1f} ms/frame ({fps:.1f} fps, serial)")
-    e2e_cell = f"{e2e_ms:.0f} ({fps:.1f} fps)" if e2e_ms else "—"
+    per_frame = (f"{e2e_ms:.0f} ms ({fps:.1f} fps)" if e2e_ms
+                 else f"{stitch_ms:.0f} ms (stitch only)")
     print("\ndocs/benchmarks.md row:")
-    print(f"| {label} | {engine} | {stitch_ms:.1f} | {e2e_cell} | {setup:.1f} s |  |")
+    print(f"| {label} | {engine} | {setup:.0f} s | {per_frame} |")
 
 
 if __name__ == "__main__":

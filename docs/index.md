@@ -59,11 +59,9 @@ pano = st.stitch(f0, f1, frame=0)      # equirectangular BGR (CPU reference path
 
 ## Performance
 
-8K 10-bit on an Apple M3 (MPS): **~68 ms/frame stitch, ~102 ms/frame
-end-to-end serial (9.8 fps)** after a one-time ~10 s setup (map build + GPU
-compile). Per-platform table (GPU, torch-CPU, numpy reference) in
-[benchmarks](benchmarks.md); per-stage budget in
-[architecture](architecture.md).
+8K 10-bit on an Apple M3 (MPS): **~10 s setup, then ~102 ms per frame
+(9.8 fps)**. Per-platform table in [benchmarks](benchmarks.md); per-stage
+budget in [architecture](architecture.md).
 
 ## Documentation
 

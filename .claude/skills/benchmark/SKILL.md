@@ -21,6 +21,11 @@ Each prints a ready-to-paste markdown row. Use the worst-case tumble clip
 (or any clip with continuous real motion so levelling recomputes every
 frame). Standard workload is 8K (7680×3840) 10-bit `rocksteady_horizon`.
 
+The table has exactly two data columns — **setup** and **per frame** — no
+stage breakdowns (those belong in docs/architecture.md). "Per frame" is the
+serial e2e number where `convert()` would pick that engine, else the stitch
+time marked "(stitch only)".
+
 ## Recording rules
 
 - **Replace** the platform's existing row, don't append — the table records
