@@ -20,16 +20,15 @@ for the recorded modes and validated on worst-case footage:
 1. **More cameras**: verify the `[MEASURED]` constants (see
    `docs/constants.md`) hold across units as new OSV samples arrive; per-unit
    data (calibration, mount) is already read per file.
-2. **Faster encode** — the V100 pipeline is now NVENC-session-bound
-   (one of the card's three NVENC engines pegged at 100%, ~59 ms/frame
-   on real content; see `architecture.md`). Levers, most valuable first:
-   segment-parallel encoding across the three engines (GOP-aligned
-   chunks, one session each, concatenated at mux — changes GOP
-   structure, needs the DJI-comparison gate re-run); feeding NVENC
-   device frames (drops the build copy + libav's internal pageable
-   re-upload; needs PyAV support); an NVENC preset knob (quality
-   trade-off). Floors underneath: ~25 ms NVDEC pair, ~10.5 ms GPU
-   compute.
+2. **Beyond the NVDEC wall** — segment-parallel NVENC landed
+   (`enc_sessions`, 310.9 → 200.7 s on the full base clip) and the V100
+   now runs its single decode engine at 94-100%: the remaining CUDA
+   levers are feeding NVENC device frames (drops the build copy +
+   libav's internal pageable re-upload; needs PyAV support) and
+   multi-clip batching on multi-NVDEC cards (Ampere+ have 2-5 decode
+   engines — there, running clips in parallel or splitting one clip's
+   decode across engines multiplies throughput; on the V100 it cannot).
+   Floors underneath: ~25 ms NVDEC pair, ~10.5 ms GPU compute.
 
 ## Done (2026-08-25): CUDA validation + optimization on the V100
 

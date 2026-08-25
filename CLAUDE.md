@@ -86,8 +86,11 @@ python tools/validate_against_dji.py            # frame comparison vs DJI export
 
 Validated 2026-08-25 (branch `cuda-validation`): stitch ran unmodified
 (bit-parity vs torch-CPU), NVENC + hvc1 + spherical verified, DJI
-comparison passed per `docs/validation.md`. **e2e 46 ms/frame (22 fps)**
-— 1.6× the M3 — via four findings, each verified bit-identical:
+comparison passed per `docs/validation.md`. **36 ms/frame (28 fps,
+0.79× realtime) on the full base clip** — 2× the M3 — with the single
+NVDEC engine at 94-100% (the hardware wall); segment-parallel NVENC
+(`enc_sessions`, 3 persistent sessions, forced-IDR chunks, reorder
+muxer) recovered the card's other two encode engines. Under that:
 decode-to-device (`gpu_decode_fmt` → `"cuda"`: NVDEC frames stay on the
 GPU in torch's primary context, 25 ms/pair; the generic hwaccel path fed
 the same engine at 15% utilization — CUDA decode lives in `nvdec.py`),

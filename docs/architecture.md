@@ -135,15 +135,23 @@ Notable implementation facts:
   build 18, encode+mux 35, decode 25/pair — the next win is feeding NVENC
   device frames (needs PyAV support; roadmap). MPS keeps the two-thread
   layout its numbers were recorded with.
-- At steady state the pipeline is **NVENC-session-bound**: on the full
-  base clip nvidia-smi reports the encoder at exactly 33% in every
-  sample — the V100 has three NVENC engines and one session runs on one
-  engine, so 33% aggregate is that engine at 100% (~59 ms/frame on real
-  outdoor content; the worst-case clip encodes easier at ~35). Going
-  past it means segment-parallel encoding across the three engines
-  (GOP-aligned chunks, one session each, concatenated at mux) or a
-  faster NVENC preset — both change encode semantics, neither attempted
-  yet. GPU 46% / NVDEC 41% at steady state: everything else has slack.
+- One NVENC session runs on ONE engine: before segment-parallel encode
+  the full base clip showed the encoder at exactly 33% in every sample —
+  the V100's three engines with one pegged (~59 ms/frame on real
+  content) and two idle. `enc_sessions` (default 3 on CUDA+NVENC) fixes
+  it: three PERSISTENT sessions each encode every third ~2 s chunk, a
+  forced IDR (`pict_type=I` + `forced-idr`) opens each chunk so chunks
+  stay closed, `bf=0` keeps dts monotonic across seams, and a reorder
+  muxer re-serializes chunks into the single hvc1 track (all sessions
+  emit identical SPS/PPS). Sessions must be persistent — creating one
+  per chunk was measured as a ~20 ms/frame loss. Cost: keyframe every
+  2 s instead of ~8 s, ~+6% file size, encode quality 39-40 dB PSNR
+  against the single-session encode (normal GOP-layout noise; the
+  stitched frames are bit-identical). Full base clip: 310.9 → 200.7 s
+  (36 ms/frame, 28 fps, 0.79× realtime), engines at GPU 80% / NVENC 66%
+  / **NVDEC 94-100% — the single decode engine is now the hardware
+  wall**. Short benchmark windows under-report multi-session (drain
+  tail); measure ≥450 frames.
 - One-time setup is ~6.5 s: ~3.5 s map build + ~3 s `torch.compile`. The
   radial polynomial is Horner-evaluated (bit-identical maps, 2.4× faster than
   the naive `theta**n` form). Threading the two lens builds was **measured as
