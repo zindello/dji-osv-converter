@@ -103,27 +103,35 @@ class GpuStitcher:
              [-0.100644, -0.338572, 0.439216],
              [0.439216, -0.398942, -0.040274]], dtype=torch.float32, device=self.dev)
 
-        # equirect ray components for the levelling rotation, kept as three
-        # contiguous (H*W,) tensors, plus a (3, H*W) stack for the matmul path.
-        d = directions(height, width).reshape(-1, 3).astype(np.float32)
-        self.dx = torch.from_numpy(np.ascontiguousarray(d[:, 0])).to(self.dev)
-        self.dy = torch.from_numpy(np.ascontiguousarray(d[:, 1])).to(self.dev)
-        self.dz = torch.from_numpy(np.ascontiguousarray(d[:, 2])).to(self.dev)
-        self._d3 = torch.stack([self.dx, self.dy, self.dz])          # (3, H*W)
-
         # The level-grid build was 48% of the whole stitch (91 ms at 8K on MPS):
         # 15 separate elementwise kernels for the rotation plus a no-op
         # remainder (atan2 already returns [-pi, pi]) and a 16 ms stack.
-        # torch.compile fuses the whole computation to ~6.5 ms; the fallback
-        # uses a (3,3)@(3,N) matmul (12 ms - note the SHAPE: the transposed
-        # (N,3)@(3,3) orientation is 7x slower on MPS, which is what the old
-        # "matmul is slow" note measured). Scalars are passed as floats so a
-        # changing rotation never retriggers compilation. Output differs from
-        # the old remainder form only AT the wrap meridian (gx=+1 vs -1: the
-        # same longitude, one column apart) - measured 1 px in 59M, invisible.
-        dx, dy, dz = self.dx, self.dy, self.dz
+        # torch.compile fuses the computation; the equirect direction field is
+        # SEPARABLE - d = [cos(lat)sin(lon), sin(lat), -cos(lat)cos(lon)] - so
+        # the fused kernel reads four 1-D sin/cos tables (~90 KB) instead of
+        # three precomputed (H*W,) components (354 MB): 13.5 -> 5.7 ms at 8K.
+        # Scalars are passed as floats so a changing rotation never retriggers
+        # compilation.
+        # Precision: recomputing the products in f32 in-kernel (vs the f64
+        # precompute) shifts gx by at most 7e-5 - only where the SAMPLED
+        # pano's pole (the lens optical axis) lands, where atan2 amplifies the
+        # ~1-ulp ray error as the sampled cos(lat) -> 0. There, adjacent
+        # sample columns are near-duplicates of the same physical direction,
+        # so old and new both sample valid values. Measured over spread
+        # frames: <= 0.0004% of output pixels differ by >= 1 10-bit LSB
+        # (isolated singles; calm frames bit-exact), chroma bit-identical.
+        # The old wrap-meridian note still applies (gx = +1 vs -1: same
+        # longitude - 1 px in 59M).
+        lon = (np.arange(width, dtype=np.float64) / width - 0.5) * 2 * np.pi
+        lat = (0.5 - np.arange(height, dtype=np.float64) / height) * np.pi
+        as32 = lambda a: torch.from_numpy(a.astype(np.float32)).to(self.dev)
+        sl, cl = as32(np.sin(lon)), as32(np.cos(lon))                # (W,)
+        sa, ca = as32(np.sin(lat))[:, None], as32(np.cos(lat))[:, None]  # (H,1)
 
         def _grid_math(r00, r01, r02, r10, r11, r12, r20, r21, r22):
+            dx = ca * sl
+            dy = sa
+            dz = -(ca * cl)
             nx = dx * r00 + dy * r01 + dz * r02
             ny = dx * r10 + dy * r11 + dz * r12
             nz = dx * r20 + dy * r21 + dz * r22
@@ -132,12 +140,39 @@ class GpuStitcher:
             return torch.stack([gx, gy], -1)
 
         self._grid_fused = None
+        self._d3 = None          # (3, H*W) rays, built lazily for the fallback
         try:
             fn = torch.compile(_grid_math)
             fn(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)   # compile now
             self._grid_fused = fn
         except Exception:                    # inductor unavailable: matmul path
             pass
+
+        # p010 pack: fuse the clamp/scale/permute float math (the uint16 cast
+        # can't be compiled - inductor's MPS backend lacks the dtype - so it
+        # stays an eager kernel). 20 -> 10 ms at 8K, bit-identical.
+        def _pack_math(Y, UV):
+            Yp = Y[0, 0].clamp(64, 940) * 64.0 + 0.5
+            UVp = (UV[0].permute(1, 2, 0).reshape(UV.shape[2], -1)
+                   .clamp(64, 960) * 64.0 + 0.5)
+            return Yp, UVp
+
+        self._pack_fused = None
+        try:
+            pf = torch.compile(_pack_math)
+            pf(torch.zeros(1, 1, height, width, device=self.dev),
+               torch.zeros(1, 2, height // 2, width // 2, device=self.dev))
+            self._pack_fused = pf
+        except Exception:
+            self._pack_fused = _pack_math    # eager, same math
+        # Direct float->uint16 cast halves the device->host transfer vs the old
+        # int32 route (37 -> 21 ms measured) and is bit-identical. Probe it:
+        # torch's uint16 is "limited support" and not every backend casts.
+        try:
+            torch.zeros(2, device=self.dev).to(torch.uint16).cpu()
+            self._u16 = True
+        except Exception:
+            self._u16 = False
 
         # Factory lens-shading (devignette) gain per lens, in equirect space -
         # multiplied into each warped lens before the blend to lift the vignetted
@@ -168,6 +203,9 @@ class GpuStitcher:
         r = [float(v) for v in np.asarray(R, dtype=np.float64).flatten()]
         if self._grid_fused is not None:
             return self._grid_fused(*r).view(1, self.H, self.W, 2)
+        if self._d3 is None:
+            d = directions(self.H, self.W).reshape(-1, 3).astype(np.float32)
+            self._d3 = torch.from_numpy(np.ascontiguousarray(d.T)).to(self.dev)
         Rt = torch.tensor(np.asarray(R, np.float32), device=self.dev)
         n = Rt @ self._d3
         gx = torch.atan2(n[0], -n[2]) * (1.0 / np.pi)
@@ -322,14 +360,19 @@ class GpuStitcher:
         return Ya, UVa, Yb, UVb
 
     def _pack_p010(self, Y, UV):
-        """(Y (1,1,H,W), UV (1,2,H/2,W/2)) -> p010le planes, top-aligned uint16."""
-        H, W = self.H, self.W
-        # +0.5-truncate == round-half-up for these positive values (1 LSB of
-        # 16-bit at exact ties vs round-half-even); skips the separate round
-        # and second clamp kernels. Range is guaranteed by the first clamp.
+        """(Y (1,1,H,W), UV (1,2,H/2,W/2)) -> p010le planes, top-aligned uint16.
+
+        +0.5-truncate == round-half-up for these positive values (1 LSB of
+        16-bit at exact ties vs round-half-even); skips the separate round
+        and second clamp kernels. Range is guaranteed by the first clamp.
+        The float math is torch.compile-fused; the cast goes straight to
+        uint16 where the backend supports it (halves the D2H bytes vs int32).
+        """
+        Yp, UVp = self._pack_fused(Y, UV)
+        if self._u16:
+            return (Yp.to(torch.uint16).cpu().numpy(),
+                    UVp.to(torch.uint16).cpu().numpy())
         to = lambda t: t.to(torch.int32).cpu().numpy().astype(np.uint16)
-        Yp = (Y[0, 0].clamp(64, 940) * 64.0 + 0.5)
-        UVp = (UV[0].permute(1, 2, 0).reshape(H // 2, W).clamp(64, 960) * 64.0 + 0.5)
         return to(Yp), to(UVp)
 
     def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,

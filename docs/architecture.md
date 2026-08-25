@@ -47,19 +47,36 @@ fisheye pair up and one packed frame down per frame.
 | stage | ms/frame |
 |---|---|
 | decode (separate hardware) | 52.6 |
-| warp ×2 lenses | 27.6 |
+| upload + split YUV | ~11 |
+| warp ×2 lenses | 13.2 |
 | blend (lerp) | 8.4 |
-| level grid build (torch.compile-fused) | 14.5 |
-| level grid_sample | 8.2 + 2.7 decimate |
-| pack + device→host | 34.2 |
-| **stitch total** | **~96** |
-| end-to-end steady state | ~115 (8.7 fps) |
+| level grid build (fused, separable) | 5.7 |
+| level grid_sample | 8.2 + 2.4 decimate |
+| pack (fused) + uint16 device→host | ~10 |
+| **stitch total** | **~59** |
+| end-to-end steady state (serial) | ~110 (9.1 fps) |
+
+The serial end-to-end barely moves with stitch speed because decode (52.6)
+and stitch (59) run back to back — the pipelined floor is now
+max(decode, stitch) ≈ 59 ms (~17 fps), which is what the concurrency stage
+collects.
 
 Notable implementation facts:
 
-- The level-grid build is `torch.compile`-fused (91 → 6.5 ms of math; ~14 ms
-  in situ). The fallback is a `(3,3)@(3,N)` matmul — that orientation matters:
-  `(N,3)@(3,3)` is 7× slower on MPS.
+- The level-grid build is `torch.compile`-fused AND separable: the direction
+  field is `[cos(lat)sin(lon), sin(lat), −cos(lat)cos(lon)]`, so the kernel
+  reads four 1-D sin/cos tables (~90 KB) instead of 354 MB of precomputed
+  rays (13.5 → 5.7 ms). Recomputing the products in f32 shifts ≤0.0004% of
+  output pixels by ≥1 LSB, only where the sampled pano's pole lands (see the
+  code comment). The fallback is a `(3,3)@(3,N)` matmul — that orientation
+  matters: `(N,3)@(3,3)` is 7× slower on MPS.
+- The p010 pack: float math is compile-fused (the uint16 cast can't be —
+  inductor's MPS backend lacks the dtype) and the cast goes straight to
+  uint16, halving D2H bytes vs the old int32 route. Pack 37 → 10 ms,
+  bit-identical. `_u16` probes backend support and falls back to int32.
+- Measured and rejected: batching the two lens warps into one `grid_sample`
+  (the pre-`cat` copies eat the 0.5 ms win) and fp16 image planes
+  (MPS `grid_sample` isn't dtype-bound — no speedup, only precision risk).
 - The longitude wrap needs no `remainder`: `atan2` already lands in [−π, π].
 - Chroma grids are **decimated** (`[::2]`) from the full grid, never
   interpolated — averaging across the ±1 wrap discontinuity corrupts the wrap
