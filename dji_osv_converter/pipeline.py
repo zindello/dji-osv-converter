@@ -69,6 +69,20 @@ from .stitcher import blend, multiband_blend, flow_blend, match_exposure, seam_w
 logger = logging.getLogger(__name__)
 
 
+def _video_size(path: str | Path) -> tuple[int, int]:
+    """The fisheye streams' recording resolution, from the file itself."""
+    try:
+        c = av.open(str(path))
+        try:
+            v = next(s for s in c.streams.video
+                     if s.codec_context.name != "mjpeg")
+            return (v.codec_context.width, v.codec_context.height)
+        finally:
+            c.close()
+    except Exception:
+        return (3840, 3840)
+
+
 def transfer_gamma(path: str | Path) -> float:
     """Encoding transfer gamma from the video stream's declared ``color_trc``."""
     try:
@@ -208,7 +222,9 @@ class Stitcher360:
     def from_file(cls, path: str | Path, width: int = 7680, height: int = 3840,
                   fov_deg: float | None = None, levelling: str = "plain",
                   max_frames: int | None = None) -> "Stitcher360":
-        calibs = read_osv_calibration(path)
+        # Select the calibration blocks matching the file's ACTUAL recording
+        # resolution - the header carries sets for several sensor modes.
+        calibs = read_osv_calibration(path, want_size=_video_size(path))
         meta = read_metadata(path, max_frames=max_frames)
         mount = read_mount_rotation(path)
         fov = DEFAULT_FOV_DEG if fov_deg is None else fov_deg

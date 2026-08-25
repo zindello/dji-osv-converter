@@ -1,32 +1,19 @@
-# DJI CLI Reframe
+# dji_osv_converter
 
-A CLI tool to convert DJI OSV (Object Stabilization Vector) files to DaVinci Resolve format, bypassing the need for the macOS GUI app.
+Convert DJI Osmo 360 `.OSV` recordings to equirectangular 360° MP4 —
+stitching, RockSteady stabilisation and HorizonLevelling included — matching
+or beating DJI Studio's own exports, with everything derived from the OSV
+file itself. No DJI software, no `ffmpeg` binary; libavcodec in-process and a
+GPU stitch (Apple MPS / CUDA), 10-bit end to end.
 
-## Goal
+```bash
+pip install -r requirements.txt && pip install -e .
+python examples/convert_video.py INPUT.OSV out.mp4 --levelling rocksteady_horizon
+```
 
-Replicate the functionality of DJI Reframe (macOS app) to enable:
-- CLI conversion of raw OSV files from DJI cameras → DaVinci Resolve format
-- Batch processing of video files
-- Optional GUI wrapper (drag-drop interface)
+**Documentation: [`docs/`](docs/index.md)** — quick start, the
+reverse-engineered OSV format reference, the levelling/stabilisation math and
+its validation against DJI, architecture & performance, and a generated API
+reference (`docs/api/`, kept current by a pre-commit hook).
 
-## Project Status
-
-**Phase 1: Exploration & Reverse Engineering**
-- [ ] Understand OSV file format structure
-- [ ] Document DaVinci Resolve XML/import format requirements
-- [ ] Inspect DJI Reframe app internals (binary, frameworks, resources)
-- [ ] Map the conversion algorithm
-- [ ] Identify dependencies (libraries, frameworks)
-
-## Key Questions
-
-1. **OSV Format**: What's the exact structure of DJI OSV files? (binary/XML/JSON?)
-2. **Resolve Format**: What XML/data format does DaVinci Resolve expect?
-3. **The Conversion**: What's the mathematical transformation between the two?
-4. **Dependencies**: Does DJI Reframe use private DJI frameworks or standard macOS APIs?
-
-## Resources
-
-- DJI Reframe app location: `/Applications/DJI Reframe.app`
-- DaVinci Resolve documentation: https://www.blackmagicdesign.com/
-- Relevant tools: `otool`, `strings`, `xxd` for macOS binary inspection
+Status: see [`docs/ROADMAP.md`](docs/ROADMAP.md).
