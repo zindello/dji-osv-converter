@@ -361,4 +361,24 @@ class GpuStitcher:
         return self._pack_p010(Y, UV)
 
 
-__all__ = ["available", "pick_device", "GpuStitcher"]
+def p010_to_bgr(Y: np.ndarray, UV: np.ndarray) -> np.ndarray:
+    """Convert stitch_yuv's p010le planes to 8-bit BGR (BT.709 limited range).
+
+    Convenience for consumers that want stills or previews from the GPU
+    stitch without knowing the p010 layout (top-aligned uint16, interleaved
+    half-res chroma). For video, feed the planes to the encoder untouched.
+    """
+    import cv2
+    h, w = Y.shape
+    Yf = Y.astype(np.float32) / 64.0
+    UVf = UV.astype(np.float32) / 64.0
+    U = cv2.resize(UVf[:, 0::2], (w, h))
+    V = cv2.resize(UVf[:, 1::2], (w, h))
+    y, u, v = Yf - 64.0, U - 512.0, V - 512.0
+    bgr = np.stack([1.164384 * y + 2.112402 * u,
+                    1.164384 * y - 0.213249 * u - 0.532909 * v,
+                    1.164384 * y + 1.792741 * v], -1)
+    return np.clip(bgr / 1023.0 * 255.0, 0, 255).astype(np.uint8)
+
+
+__all__ = ["available", "pick_device", "GpuStitcher", "p010_to_bgr"]

@@ -81,6 +81,9 @@
                 </ul>
 
             </li>
+            <li>
+                    <a class="function" href="#p010_to_bgr">p010_to_bgr</a>
+            </li>
     </ul>
 
 
@@ -316,6 +319,25 @@ rolling-shutter correction (pipeline.Stitcher360.rs_args_for).</p>
 
 
                             </div>
+                </section>
+                <section id="p010_to_bgr">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">p010_to_bgr</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">Y</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>, </span><span class="param"><span class="n">UV</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#p010_to_bgr"></a>
+    
+            <div class="docstring"><p>Convert stitch_yuv's p010le planes to 8-bit BGR (BT.709 limited range).</p>
+
+<p>Convenience for consumers that want stills or previews from the GPU
+stitch without knowing the p010 layout (top-aligned uint16, interleaved
+half-res chroma). For video, feed the planes to the encoder untouched.</p>
+</div>
+
+
                 </section>
     </main>
 <script>

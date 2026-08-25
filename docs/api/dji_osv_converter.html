@@ -94,7 +94,7 @@ orientation      read_metadata, read_highrate               (from the OSV)
 projection       build_map                (fisheye -&gt; equirect remap)
 levelling        Stitcher360.levelling_for, horizon_lock_rotation
 pixels           OSVDecoder / iter_pairs  (libavcodec, in-process)
-GPU stitch       stitch_gpu.GpuStitcher   (CUDA / Apple MPS)
+GPU stitch       GpuStitcher, p010_to_bgr (CUDA / Apple MPS)
 video            convert                  (decode -&gt; stitch -&gt; encode -&gt; 360 tag)
 </code></pre>
 </div>

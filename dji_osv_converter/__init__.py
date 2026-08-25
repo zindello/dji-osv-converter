@@ -32,7 +32,7 @@ Building blocks (all public):
     projection       build_map                (fisheye -> equirect remap)
     levelling        Stitcher360.levelling_for, horizon_lock_rotation
     pixels           OSVDecoder / iter_pairs  (libavcodec, in-process)
-    GPU stitch       stitch_gpu.GpuStitcher   (CUDA / Apple MPS)
+    GPU stitch       GpuStitcher, p010_to_bgr (CUDA / Apple MPS)
     video            convert                  (decode -> stitch -> encode -> 360 tag)
 """
 
@@ -51,5 +51,7 @@ from .osv_calibration import (
 )
 from .pipeline import Stitcher360, horizon_lock_rotation, smoothed_rotation_track
 from .project import build_map
+from .decode import iter_pairs
 from .spherical import inject_spherical
+from .stitch_gpu import GpuStitcher, p010_to_bgr
 from .video import convert
