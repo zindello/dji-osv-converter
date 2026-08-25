@@ -2,9 +2,9 @@
 
 Ties the pieces together: stream-decode both fisheyes (VideoToolbox when
 available), stitch each frame with mount-corrected levelling, encode to HEVC
-in-process (hardware ``hevc_videotoolbox`` by default, ``libx265`` as a
-portable fallback), copy the audio without re-encoding, and tag the result as
-360 (spherical metadata).
+in-process (auto-selecting the best HEVC encoder present: VideoToolbox on
+macOS, NVENC on CUDA boxes, ``libx265`` anywhere), copy the audio without
+re-encoding, and tag the result as 360 (spherical metadata).
 
     from dji_osv_converter.video import convert
     convert("CAM_....OSV", "out.mp4", count=300)     # first 300 frames
@@ -32,8 +32,25 @@ from . import stitch_gpu
 logger = logging.getLogger(__name__)
 
 
+def _default_codec() -> str:
+    """First available HEVC encoder on this machine.
+
+    VideoToolbox (macOS) > NVENC (NVIDIA/CUDA boxes) > libx265 (software,
+    everywhere). Keeps ``convert()`` runnable unmodified across platforms.
+    """
+    for name in ("hevc_videotoolbox", "hevc_nvenc", "libx265"):
+        try:
+            av.codec.Codec(name, "w")
+            return name
+        except Exception:
+            continue
+    return "libx265"
+
+
 def _pick_pix_fmt(codec: str, bit10: bool) -> str:
-    if "videotoolbox" in codec:
+    # Hardware encoders take the packed 10-bit layout (which is also exactly
+    # what GpuStitcher emits); software encoders take planar.
+    if "videotoolbox" in codec or "nvenc" in codec:
         return "p010le" if bit10 else "nv12"
     return "yuv420p10le" if bit10 else "yuv420p"
 
@@ -41,7 +58,7 @@ def _pick_pix_fmt(codec: str, bit10: bool) -> str:
 def convert(input_osv: str | Path, output_mp4: str | Path, *,
             width: int = 7680, height: int = 3840,
             start: int = 0, count: int | None = None,
-            codec: str = "hevc_videotoolbox", bit10: bool = True,
+            codec: str | None = None, bit10: bool = True,
             bitrate: int | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = False,
             exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
@@ -51,7 +68,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
 
     ``count`` limits the number of frames (None = whole clip); ``start`` skips
     to a frame. ``codec`` is any PyAV video encoder ("hevc_videotoolbox",
-    "libx265", "hevc_nvenc", ...). ``progress(done, total)`` is called per
+    "libx265", "hevc_nvenc", ...); None (default) auto-selects the best HEVC
+    encoder present on this machine. ``progress(done, total)`` is called per
     frame if given.
 
     ``exposure`` (inter-lens exposure match) and ``lsc`` (factory devignette)
@@ -69,6 +87,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
+    if codec is None:
+        codec = _default_codec()
     stitcher = Stitcher360.from_file(input_osv, width=width, height=height,
                                      levelling=levelling)
 
@@ -117,7 +137,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             vs.codec_context.codec_tag = int.from_bytes(b"hvc1", "little")
     if bitrate:
         vs.bit_rate = bitrate
-    elif "videotoolbox" in codec:
+    elif "videotoolbox" in codec or "nvenc" in codec:
+        # Hardware encoders are rate-driven, not quality-driven.
         vs.bit_rate = int(width * height * float(fps) * BITRATE_BPP)
     else:
         vs.options = {"crf": "18"}
@@ -164,6 +185,10 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     def _encode(pts, result):
         if use_gpu:
             fr = _p010_frame(result)
+            if vs.pix_fmt != "p010le":
+                # Software encoders (libx265) take planar yuv420p10le; the
+                # p010le->planar repack is lossless (same 10-bit samples).
+                fr = fr.reformat(format=vs.pix_fmt)
         else:
             fr = av.VideoFrame.from_ndarray(np.ascontiguousarray(result),
                                             format="bgr24").reformat(format=vs.pix_fmt)

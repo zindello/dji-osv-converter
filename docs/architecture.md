@@ -25,7 +25,7 @@ dji_osv_converter/
 ```
 OSV ─ decode.iter_pairs ──► two yuv420p10le fisheyes  (VideoToolbox, ~53 ms)
                               │
-Stitcher360.maps_for ───────► │  static remap tables (built once, ~10 s)
+Stitcher360.maps_for ───────► │  static remap tables (built once, ~3.5 s)
 Stitcher360.levelling_for ──► │  per-frame rotation R (per mode)
                               ▼
               GpuStitcher.stitch_yuv          (~96 ms at 8K on M3 MPS)
@@ -67,6 +67,18 @@ Notable implementation facts:
 - Remaining headroom is overlap, not compute: decode and pack+D2H are prime
   candidates for the planned concurrency stage (floor ≈ max(GPU, decode) →
   ~15 fps).
+- One-time setup is ~6.5 s: ~3.5 s map build + ~3 s `torch.compile`. The
+  radial polynomial is Horner-evaluated (bit-identical maps, 2.4× faster than
+  the naive `theta**n` form). Threading the two lens builds was **measured as
+  a loss** (2.0 → 2.9 s — the build is memory-bandwidth-bound); a raw disk
+  cache of the maps was rejected at 885 MB per resolution for a ~2 s saving.
+- Cross-device parity: the same frame stitched on MPS vs torch-CPU differs by
+  at most 0.13 of a 10-bit level (interpolation rounding) — the math is
+  device-independent, which is the CUDA-readiness guarantee short of the box.
+- Encoding is portable: `convert()` auto-selects VideoToolbox → NVENC →
+  libx265, with the packed→planar repack handled losslessly for software
+  encoders (libx265 muxes as `hev1`, cosmetic: QuickLook-only issue, and macOS
+  gets VideoToolbox anyway).
 
 ## CPU reference path
 

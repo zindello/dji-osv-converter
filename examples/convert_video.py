@@ -27,8 +27,9 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=3840)
     ap.add_argument("--start", type=int, default=0, help="first frame")
     ap.add_argument("--count", type=int, default=None, help="frames to convert (default all)")
-    ap.add_argument("--codec", default="hevc_videotoolbox",
-                    help="PyAV encoder (hevc_videotoolbox, libx265, ...)")
+    ap.add_argument("--codec", default=None,
+                    help="PyAV encoder (hevc_videotoolbox, hevc_nvenc, libx265, "
+                         "...); default: best HEVC encoder on this machine")
     ap.add_argument("--bitrate", type=int, default=None, help="target bits/s")
     ap.add_argument("--8bit", dest="bit10", action="store_false", help="8-bit output")
     ap.add_argument("--no-audio", dest="audio", action="store_false")
