@@ -17,12 +17,39 @@ for the recorded modes and validated on worst-case footage:
 
 ## Next
 
-1. **CUDA validation** on discrete GPUs (V100/P100) — the stitch is already
-   device-agnostic torch and the pipeline auto-enables; needs profiling,
-   NVENC, and a benchmark row.
-2. **More cameras**: verify the `[MEASURED]` constants (see
+1. **More cameras**: verify the `[MEASURED]` constants (see
    `docs/constants.md`) hold across units as new OSV samples arrive; per-unit
    data (calibration, mount) is already read per file.
+2. **Faster encode** — the V100 pipeline is now NVENC-session-bound
+   (one of the card's three NVENC engines pegged at 100%, ~59 ms/frame
+   on real content; see `architecture.md`). Levers, most valuable first:
+   segment-parallel encoding across the three engines (GOP-aligned
+   chunks, one session each, concatenated at mux — changes GOP
+   structure, needs the DJI-comparison gate re-run); feeding NVENC
+   device frames (drops the build copy + libav's internal pageable
+   re-upload; needs PyAV support); an NVENC preset knob (quality
+   trade-off). Floors underneath: ~25 ms NVDEC pair, ~10.5 ms GPU
+   compute.
+
+## Done (2026-08-25): CUDA validation + optimization on the V100
+
+The stitch itself ran unmodified (bit-parity with torch-CPU verified on
+real frames) — all the work was video I/O, each step verified
+bit-identical, landing at **46 ms/frame e2e (22 fps), 1.6× the M3**:
+a platform-gated hwaccel probe (the VideoToolbox probe silently
+gave single-threaded software decode on Linux: 590 ms/frame),
+decode-to-device NVDEC (`primary_ctx` + `is_hw_owned`: frames stay on
+the GPU in torch's context, 25 ms/pair — the generic hwaccel path left
+the engine 85% idle; `hevc_cuvid` + p010 ingest remains as the fallback
+tier; CUDA decode lives in `nvdec.py`), async D2H through pinned slots
+on a side stream, GIL-releasing torch copies in the encoder thread
+(numpy's 88 MB/frame memcpy held the GIL and throttled kernel launches:
+e2e 95 → 53 from that alone), and a three-stage CUDA pipeline (stitch →
+frame-build → encode+mux: 53 → 46; the ~35 ms NVENC call is mostly
+libav's internal pageable re-upload, hence the device-frame-encode item
+above). Output validated against DJI per `docs/validation.md`; NVENC
+auto-selected and verified (hvc1 + spherical metadata + audio). Numbers
+in `docs/benchmarks.md`.
 
 ## History
 

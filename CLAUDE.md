@@ -82,6 +82,27 @@ python examples/convert_video.py IN.OSV out.mp4 --levelling rocksteady_horizon
 python tools/validate_against_dji.py            # frame comparison vs DJI export
 ```
 
+## Performance state (V100 / CUDA)
+
+Validated 2026-08-25 (branch `cuda-validation`): stitch ran unmodified
+(bit-parity vs torch-CPU), NVENC + hvc1 + spherical verified, DJI
+comparison passed per `docs/validation.md`. **e2e 46 ms/frame (22 fps)**
+— 1.6× the M3 — via four findings, each verified bit-identical:
+decode-to-device (`gpu_decode_fmt` → `"cuda"`: NVDEC frames stay on the
+GPU in torch's primary context, 25 ms/pair; the generic hwaccel path fed
+the same engine at 15% utilization — CUDA decode lives in `nvdec.py`),
+async D2H on a side stream (`stitch_yuv_async`), GIL-releasing torch
+copies in the encoder thread (numpy's 88 MB memcpy held the GIL and
+stalled kernel launches — e2e 95 → 53 from that one change), and a
+three-stage CUDA pipeline (stitch → frame-build → encode+mux; the NVENC
+call's internal re-upload is ~35 ms and deserves its own thread: 53 →
+46). Platform traps: the box needs the **cu126 torch wheel** (CUDA 13
+dropped Volta; the default wheel "imports fine" and fails at first
+kernel); hwaccel probes must be platform-gated; the primary-ctx probe
+container is held open on purpose (context-flags trap — see `nvdec.py`).
+V100 GPU compute floor is ~10.5 ms/frame; the remaining e2e gap is
+libav's pageable NVENC upload (device-frame encode is the roadmap item).
+
 ## Performance state (8K, Apple M3 / MPS)
 
 ~60 ms/frame stitch, **~73 ms/frame end-to-end (13.6 fps)** — decode/stitch/
@@ -101,13 +122,12 @@ never interpolated (wrap meridian corruption).
 
 ## Current roadmap
 
-1. **CUDA validation** (on the V100 box): `pick_device` → cuda, NVENC encode
-   (auto-selected), the pipeline path (auto-on for any GPU), real perf
-   numbers + a benchmark row. Cross-device parity already verified MPS vs
-   torch-CPU to 0.13 of a 10-bit LSB.
-2. **Multi-camera data** (awaited from the user): re-verify every
+1. **Multi-camera data** (awaited from the user): re-verify every
    `[MEASURED]` constant (`K_PLAIN`, `C_UP_FORMAT`, seam ratio 0.038) and the
    resolution/frame-rate handling against other units, rates and modes.
+2. **Faster CUDA decode** (see `docs/ROADMAP.md`): per-stream decode
+   threads / NVDEC+sw hybrid / decode-to-device; only matters on
+   single-NVDEC parts — newer NVIDIA GPUs have 2-5 engines.
 
 Known accepted gaps: rim motion blur under extreme tumble (source-limited,
 present in DJI's exports too); libx265 fallback muxes `hev1` not `hvc1`

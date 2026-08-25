@@ -14,7 +14,8 @@ pipelined on GPU, serial on CPU).
 |---|---|---|---|
 | Apple M3 (macOS 15) | GPU | ~7 s | **73 ms (13.6 fps)** |
 | Apple M3 (macOS 15) | CPU | 3 s | 972 ms (1.0 fps) |
-| NVIDIA V100 (Linux) | GPU | *pending* | *pending* |
+| NVIDIA V100 (CUDA 12.6, Linux) | GPU | 33 s | **46 ms (22.0 fps)** |
+| NVIDIA V100 (CUDA 12.6, Linux) | CPU | 23 s | 5334 ms (0.2 fps) |
 
 ## Adding a row
 
