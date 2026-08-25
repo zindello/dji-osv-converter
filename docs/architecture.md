@@ -54,12 +54,14 @@ fisheye pair up and one packed frame down per frame.
 | level grid_sample | 8.2 + 2.4 decimate |
 | pack (fused) + uint16 device→host | ~10 |
 | **stitch total** | **~59** |
-| end-to-end steady state (serial) | ~110 (9.1 fps) |
+| end-to-end, pipelined (default on GPU) | **~73 (13.6 fps)** |
+| end-to-end, serial (`pipeline=False`) | ~104 (9.6 fps) |
 
-The serial end-to-end barely moves with stitch speed because decode (52.6)
-and stitch (59) run back to back — the pipelined floor is now
-max(decode, stitch) ≈ 59 ms (~17 fps), which is what the concurrency stage
-collects.
+Decode/stitch/encode run on three threads on the GPU path (decode prefetch +
+encoder queue in `video.py`); decode fully hides under the stitch, and the
+residual gap to the ~60 ms stitch floor is queue handoff + the encoder-side
+frame copy. Output is frame-identical to the serial path (verified by
+decoding both).
 
 Notable implementation facts:
 
@@ -81,9 +83,12 @@ Notable implementation facts:
 - Chroma grids are **decimated** (`[::2]`) from the full grid, never
   interpolated — averaging across the ±1 wrap discontinuity corrupts the wrap
   meridian.
-- Remaining headroom is overlap, not compute: decode and pack+D2H are prime
-  candidates for the planned concurrency stage (floor ≈ max(GPU, decode) →
-  ~15 fps).
+- Concurrency, measured (M3): GPU stage-pipelining WINS (104 → 73 ms) and is
+  the default. Everything else LOSES: moving the D2H fetch to the encoder
+  thread (63 → 74 ms — cross-thread `.cpu()` serializes on the MPS kernel
+  queue), CPU stage overlap (912 → 1078 ms) and CPU frame-parallel stitch
+  threads (0.79× at 2) — numpy/OpenCV already saturate the cores, so the
+  CPU path stays serial.
 - One-time setup is ~6.5 s: ~3.5 s map build + ~3 s `torch.compile`. The
   radial polynomial is Horner-evaluated (bit-identical maps, 2.4× faster than
   the naive `theta**n` form). Threading the two lens builds was **measured as

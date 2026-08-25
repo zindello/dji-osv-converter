@@ -113,10 +113,10 @@ def main() -> None:
     e2e_ms = None
     if args.e2e:
         ts: list[float] = []
+        # Shipping defaults - incl. pipeline auto (threaded on GPU).
         convert(args.osv, "/tmp/_bench_e2e.mp4", start=0, count=args.e2e,
                 levelling=args.levelling, audio=False, spherical=False,
                 gpu=not args.reference,
-                **({"pipeline": False} if not args.reference else {}),
                 progress=lambda d, t_: ts.append(time.time()))
         d = np.diff(ts)
         tail = d[len(d) // 3:]                       # skip spin-up
@@ -129,7 +129,7 @@ def main() -> None:
     print(f"setup    : {setup:.1f} s")
     print(f"stitch   : {stitch_ms:.1f} ms/frame")
     if e2e_ms:
-        print(f"e2e      : {e2e_ms:.1f} ms/frame ({fps:.1f} fps, serial)")
+        print(f"e2e      : {e2e_ms:.1f} ms/frame ({fps:.1f} fps)")
     per_frame = (f"{e2e_ms:.0f} ms ({fps:.1f} fps)" if e2e_ms
                  else f"{stitch_ms:.0f} ms (stitch only)")
     kind = "CPU" if (args.reference or dev_label == "cpu") else "GPU"

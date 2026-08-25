@@ -25,7 +25,8 @@ the user's sign-off in the report. "Looks the same" is not a result.
 ## Current budget (8K, M3/MPS) — docs/architecture.md keeps the live copy
 
 decode 52.6 | upload/split ~11 | warp 13.2 | blend 8.4 | level grid 5.7 |
-level sample 8.2+2.4 | pack+D2H ~10 → stitch ~59 ms, serial e2e ~110 ms.
+level sample 8.2+2.4 | pack+D2H ~10 → stitch ~60 ms; e2e ~73 ms pipelined
+(the GPU default; serial ~104).
 
 ## Measured dead ends — do not retry without new evidence
 
@@ -39,3 +40,8 @@ level sample 8.2+2.4 | pack+D2H ~10 → stitch ~59 ms, serial e2e ~110 ms.
 - torch.compile of uint16 casts (inductor MPS backend lacks the dtype).
 - Eager (unfused) elementwise chains at 8K (kernel-launch dominated; only
   compiled fusions or single big ops pay).
+- D2H fetch on the encoder thread (63 → 74 ms on MPS: cross-thread `.cpu()`
+  serializes on the kernel queue — fetch stays on the stitch thread).
+- CPU-path concurrency, every variant: stage overlap 912 → 1078 ms,
+  frame-parallel stitch threads 0.79× at 2 workers. numpy/OpenCV already
+  saturate the cores; the CPU path stays serial.

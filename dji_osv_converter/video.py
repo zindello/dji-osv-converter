@@ -196,12 +196,17 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         for pkt in vs.encode(fr):
             out.mux(pkt)
 
-    # Overlap decode / stitch / encode on separate threads. Worth it only when
-    # the stages run on separate hardware (CUDA GPU + NVDEC/NVENC + spare CPU
-    # cores); on Apple MPS they share memory and CPU, so threading contends and
-    # serial is faster - default to pipelining only on CUDA.
+    # Overlap decode / stitch / encode on separate threads. Pays whenever the
+    # stitch runs on a GPU: decode (~53 ms, VideoToolbox/libav) then hides
+    # under the stitch. Measured on M3/MPS: 104 -> 73 ms/frame (this flipped
+    # from a loss to a win once the stitch dropped under decode+encode).
+    # On the CPU path every concurrency variant measured is a REGRESSION -
+    # stage overlap 912 -> 1078 ms, frame-parallel stitch threads 0.79x at 2 -
+    # because numpy/OpenCV already saturate the cores; CPU stays serial.
+    # (Also measured: moving the D2H fetch to the encoder thread on MPS is a
+    # loss, 63 -> 74 ms - cross-thread .cpu() serializes on the kernel queue.)
     if pipeline is None:
-        pipeline = use_gpu and gpu_stitch.dev.type == "cuda"
+        pipeline = use_gpu
 
     done = 0
     if pipeline:

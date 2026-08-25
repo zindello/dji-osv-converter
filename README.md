@@ -11,8 +11,8 @@ pip install -r requirements.txt && pip install -e .
 python examples/convert_video.py INPUT.OSV out.mp4 --levelling rocksteady_horizon
 ```
 
-**Speed** (8K 10-bit, stabilised, Apple M3/MPS): ~10 s setup, then
-~102 ms per frame (9.8 fps). Per-platform table in
+**Speed** (8K 10-bit, stabilised, Apple M3/MPS): ~7 s setup, then
+~73 ms per frame (13.6 fps). Per-platform table in
 [`docs/benchmarks.md`](docs/benchmarks.md), measured by
 `tools/benchmark.py`.
 

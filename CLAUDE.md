@@ -84,26 +84,28 @@ python tools/validate_against_dji.py            # frame comparison vs DJI export
 
 ## Performance state (8K, Apple M3 / MPS)
 
-~59 ms/frame stitch, ~110 ms end-to-end serial (decode 52.6 + stitch back to
-back; pipelined floor ≈ 59 ms → ~17 fps), ~7 s one-time setup (map build +
-torch.compile). Budget table in `docs/architecture.md`. Measured-and-rejected:
-threading the map build (memory-bound), disk-caching maps (885 MB/resolution),
-batched lens warps (pre-`cat` eats the win), fp16 planes (MPS grid_sample not
-dtype-bound). MPS quirks: `(3,3)@(3,N)` matmul is 7× faster than
-`(N,3)@(3,3)`; inductor's MPS backend can't codegen uint16 (cast eagerly).
-Chroma grids are decimated `[::2]`, never interpolated (wrap meridian
-corruption).
+~60 ms/frame stitch, **~73 ms/frame end-to-end (13.6 fps)** — decode/stitch/
+encode pipelined on threads, the GPU default (`pipeline` auto in `video.py`);
+output verified frame-identical to serial. ~7 s one-time setup (map build +
+torch.compile). Budget in `docs/architecture.md`, per-platform table in
+`docs/benchmarks.md` (tools/benchmark.py is the canonical instrument).
+Measured-and-rejected: threading the map build (memory-bound), disk-caching
+maps (885 MB/resolution), batched lens warps (pre-`cat` eats the win), fp16
+planes (MPS grid_sample not dtype-bound), D2H fetch on the encoder thread
+(cross-thread `.cpu()` serializes on the MPS kernel queue), and EVERY form of
+CPU concurrency (stage overlap 912→1078 ms; frame-parallel threads 0.79× —
+numpy/OpenCV already saturate the cores; CPU stays serial). MPS quirks:
+`(3,3)@(3,N)` matmul is 7× faster than `(N,3)@(3,3)`; inductor's MPS backend
+can't codegen uint16 (cast eagerly). Chroma grids are decimated `[::2]`,
+never interpolated (wrap meridian corruption).
 
 ## Current roadmap
 
-1. **Concurrency** (on the M3): overlap decode (~53 ms) / stitch (~96 ms) /
-   pack+D2H (~34 ms) / encode. Floor ≈ max(GPU, decode) → ~15 fps.
-   Threaded pipelining already auto-enables on CUDA (`pipeline=True` path in
-   `video.py`); MPS measured faster serial.
-2. **CUDA validation** (on the V100 box): `pick_device` → cuda, NVENC encode
-   (auto-selected), the pipeline path, real perf numbers. Cross-device parity
-   already verified MPS vs torch-CPU to 0.13 of a 10-bit LSB.
-3. **Multi-camera data** (awaited from the user): re-verify every
+1. **CUDA validation** (on the V100 box): `pick_device` → cuda, NVENC encode
+   (auto-selected), the pipeline path (auto-on for any GPU), real perf
+   numbers + a benchmark row. Cross-device parity already verified MPS vs
+   torch-CPU to 0.13 of a 10-bit LSB.
+2. **Multi-camera data** (awaited from the user): re-verify every
    `[MEASURED]` constant (`K_PLAIN`, `C_UP_FORMAT`, seam ratio 0.038) and the
    resolution/frame-rate handling against other units, rates and modes.
 
