@@ -132,8 +132,9 @@ def main() -> None:
         print(f"e2e      : {e2e_ms:.1f} ms/frame ({fps:.1f} fps, serial)")
     per_frame = (f"{e2e_ms:.0f} ms ({fps:.1f} fps)" if e2e_ms
                  else f"{stitch_ms:.0f} ms (stitch only)")
+    kind = "CPU" if (args.reference or dev_label == "cpu") else "GPU"
     print("\ndocs/benchmarks.md row:")
-    print(f"| {label} | {engine} | {setup:.0f} s | {per_frame} |")
+    print(f"| {label} | {kind} | {setup:.0f} s | {per_frame} |")
 
 
 if __name__ == "__main__":

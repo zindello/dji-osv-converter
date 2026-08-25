@@ -21,10 +21,12 @@ Each prints a ready-to-paste markdown row. Use the worst-case tumble clip
 (or any clip with continuous real motion so levelling recomputes every
 frame). Standard workload is 8K (7680×3840) 10-bit `rocksteady_horizon`.
 
-The table has exactly two data columns — **setup** and **per frame** — no
-stage breakdowns (those belong in docs/architecture.md). "Per frame" is the
-serial e2e number where `convert()` would pick that engine, else the stitch
-time marked "(stitch only)".
+The table is deliberately plain: **two rows per platform (GPU and CPU)**,
+two data columns (**setup**, **per frame**), no engine jargon and no stage
+breakdowns (those belong in docs/architecture.md). "GPU" is whatever
+`convert()` auto-selects (CUDA/MPS); "CPU" is the no-GPU fallback path
+(`--reference`). torch-CPU parity runs are useful measurements but do NOT
+get a table row.
 
 ## Recording rules
 
