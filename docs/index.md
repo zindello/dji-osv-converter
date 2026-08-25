@@ -59,9 +59,11 @@ pano = st.stitch(f0, f1, frame=0)      # equirectangular BGR (CPU reference path
 
 ## Performance
 
-8K 10-bit on an Apple M3 (MPS): **~59 ms/frame stitch, ~110 ms/frame
-end-to-end serial (9.1 fps)** after a one-time ~7 s setup (map build + GPU
-compile). See [architecture](architecture.md) for the budget.
+8K 10-bit on an Apple M3 (MPS): **~68 ms/frame stitch, ~102 ms/frame
+end-to-end serial (9.8 fps)** after a one-time ~10 s setup (map build + GPU
+compile). Per-platform table (GPU, torch-CPU, numpy reference) in
+[benchmarks](benchmarks.md); per-stage budget in
+[architecture](architecture.md).
 
 ## Documentation
 
@@ -70,6 +72,8 @@ compile). See [architecture](architecture.md) for the budget.
 - [Levelling & stabilisation math](levelling.md) — how each mode works and how
   it was validated
 - [Architecture](architecture.md) — module map, data flow, performance budget
+- [Benchmarks](benchmarks.md) — the per-platform speed table and how to add
+  a row (`tools/benchmark.py`)
 - [Constants & provenance](constants.md) — every value that is *not* from the
   OSV, and why
 - [Validation methodology](validation.md) — how claims against DJI are tested
