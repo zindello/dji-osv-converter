@@ -72,6 +72,12 @@
                         <li>
                                 <a class="function" href="#GpuStitcher.stitch_yuv">stitch_yuv</a>
                         </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.async_d2h">async_d2h</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#GpuStitcher.stitch_yuv_async">stitch_yuv_async</a>
+                        </li>
                 </ul>
 
             </li>
@@ -287,6 +293,42 @@ device changes. Construct only when <code><a href="#available">available()</a></
 two lenses' colour, ~15ms/frame dearer); the default luma-only match is
 the shipping path. <code>rs</code> = (theta (S,3), t0, scale) enables per-pixel
 rolling-shutter correction (pipeline.Stitcher360.rs_args_for).</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.async_d2h" class="classattr">
+                                <div class="attr variable">
+            <span class="name">async_d2h</span><span class="annotation">: bool</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.async_d2h"></a>
+    
+            <div class="docstring"><p>True when <code><a href="#GpuStitcher.stitch_yuv_async">stitch_yuv_async</a></code> is available (CUDA + uint16 cast).</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.stitch_yuv_async" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">stitch_yuv_async</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">y0</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">y1</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">R</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">exposure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">wb</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">rs</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.stitch_yuv_async"></a>
+    
+            <div class="docstring"><p><code><a href="#GpuStitcher.stitch_yuv">stitch_yuv</a></code>, but the D2H copy runs on a side stream (CUDA only).</p>
+
+<p>The packed planes are copied into pinned host memory by the copy
+engine while the default stream starts the next frame's kernels —
+on MPS the single kernel queue forbids this, on CUDA it hides the
+whole fetch (~26 ms pageable at 8K on PCIe V100). Returns a handle:
+<code>planes()</code> blocks until the copy lands, <code>release()</code> returns the
+pinned slot to the pool. Backpressure comes from the slot pool —
+callers must release each handle after consuming it.</p>
 </div>
 
 

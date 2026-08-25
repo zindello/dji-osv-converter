@@ -171,12 +171,13 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     # no 8-bit truncation. The CPU path stays 8-bit BGR.
     dec_fmt = gpu_fmt if use_gpu else "bgr24"
 
-    def _stitch(idx, f0, f1):
+    def _stitch(idx, f0, f1, gpu_async=False):
         R = stitcher.levelling_for(idx)
         if use_gpu:
             rs = stitcher.rs_args_for(idx) if use_rs else None
-            return gpu_stitch.stitch_yuv(f0, f1, R, exposure=exposure,
-                                         wb=exposure_wb, rs=rs)          # (Y, UV) p010
+            fn = gpu_stitch.stitch_yuv_async if gpu_async else gpu_stitch.stitch_yuv
+            return fn(f0, f1, R, exposure=exposure,
+                      wb=exposure_wb, rs=rs)          # (Y, UV) p010, or a handle
         return stitcher.stitch(f0, f1, frame=idx, exposure=exposure, multiband=multiband)
 
     def _p010_frame(planes) -> "av.VideoFrame":
@@ -189,7 +190,13 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
 
     def _encode(pts, result):
         if use_gpu:
-            fr = _p010_frame(result)
+            if isinstance(result, stitch_gpu._AsyncPlanes):
+                # blocks until the side-stream D2H lands, then copies out of
+                # the pinned slot (the copy into the AVFrame happens anyway)
+                fr = _p010_frame(result.planes())
+                result.release()
+            else:
+                fr = _p010_frame(result)
             if vs.pix_fmt != "p010le":
                 # Software encoders (libx265) take planar yuv420p10le; the
                 # p010le->planar repack is lossless (same 10-bit samples).
@@ -230,9 +237,14 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
 
         enc_thread = threading.Thread(target=_encoder, daemon=True)
         enc_thread.start()
+        # On CUDA the encoder thread receives async handles: the packed
+        # planes travel device->pinned-host on a side stream while the
+        # default stream is already stitching the next frame (MPS cannot -
+        # one kernel queue - so it keeps the synchronous fetch).
+        gpu_async = use_gpu and gpu_stitch.async_d2h
         for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
                                                fmt=dec_fmt, hardware=hardware), size=4):
-            enc_q.put((done, _stitch(idx, f0, f1)))
+            enc_q.put((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
             done += 1
             if progress:
                 progress(done, n_frames)
