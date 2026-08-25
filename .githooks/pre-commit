@@ -1,0 +1,9 @@
+#!/bin/sh
+# 1) unit tests must pass (fast, no sample data needed)
+# 2) regenerate the API reference so docs/ always matches the code
+set -e
+cd "$(git rev-parse --show-toplevel)"
+PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+"$PY" -m unittest discover -s tests -q
+sh tools/gen_docs.sh
+git add docs/api
