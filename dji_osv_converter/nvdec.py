@@ -35,7 +35,8 @@ from pathlib import Path
 import av
 import numpy as np
 
-from .decode import _frame_p010, _video_streams
+from .constants import CUVID_PROBE_PACKETS
+from .decode import _frame_index, _frame_p010, _open_stream, _video_streams
 
 logger = logging.getLogger(__name__)
 
@@ -134,18 +135,14 @@ def cuda_worker(path, si: int, start: int, count: int | None, q, stop):
     import torch
     try:
         side = torch.cuda.Stream()
-        c = av.open(str(path), hwaccel=hwaccel_primary())
-        s = _video_streams(c)[si]
-        rate, tb = float(s.average_rate), s.time_base
-        if start > 0:
-            c.seek(int(start / rate / tb), stream=s, backward=True, any_frame=False)
+        c, s, rate, tb = _open_stream(path, si, start, hwaccel=hwaccel_primary())
         fh, fw = s.codec_context.height, s.codec_context.width
         for fr in c.decode(s):
             if stop.is_set():
                 break
             if fr.pts is None:
                 continue
-            idx = int(round(float(fr.pts * tb) * rate))
+            idx = _frame_index(fr.pts, tb, rate)
             if idx < start:
                 continue
             if count is not None and idx >= start + count:
@@ -187,7 +184,7 @@ def cuvid_usable(path) -> bool:
                     if any(fr.format.name == "p010le" for fr in ctx.decode(pkt)):
                         _CUVID_OK = True
                         break
-                    if i > 64:        # cuvid has multi-packet latency; cap the probe
+                    if i > CUVID_PROBE_PACKETS:   # multi-packet latency; cap
                         break
                 c.close()
             except Exception:
@@ -204,11 +201,7 @@ def cuvid_worker(path, si: int, start: int, count: int | None, q, stop,
     stitch thread gets a true async upload instead of a pageable copy.
     """
     try:
-        c = av.open(str(path))
-        s = _video_streams(c)[si]
-        rate, tb = float(s.average_rate), s.time_base
-        if start > 0:
-            c.seek(int(start / rate / tb), stream=s, backward=True, any_frame=False)
+        c, s, rate, tb = _open_stream(path, si, start)
         ctx = av.CodecContext.create("hevc_cuvid", "r")
         ctx.extradata = s.codec_context.extradata
 
@@ -224,7 +217,7 @@ def cuvid_worker(path, si: int, start: int, count: int | None, q, stop,
         def emit(fr) -> bool:            # True = reached count, stop decoding
             if fr.pts is None:
                 return False
-            idx = int(round(float(fr.pts * tb) * rate))
+            idx = _frame_index(fr.pts, tb, rate)
             if idx < start:
                 return False
             if count is not None and idx >= start + count:

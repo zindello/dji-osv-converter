@@ -23,7 +23,8 @@ from pathlib import Path
 import av
 import numpy as np
 
-from .constants import BITRATE_BPP
+from .constants import (BITRATE_BPP, ENC_CHUNK_SECONDS, NVENC_SESSIONS,
+                        PIPELINE_QUEUE_FRAMES)
 from .pipeline import Stitcher360
 from .decode import iter_pairs, prefetch, gpu_decode_fmt
 from .spherical import inject_spherical
@@ -246,7 +247,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     done = 0
     multi_enc = False
     if pipeline:
-        enc_q: "queue.Queue" = queue.Queue(maxsize=4)
+        enc_q: "queue.Queue" = queue.Queue(maxsize=PIPELINE_QUEUE_FRAMES)
         enc_done, enc_err = object(), []
 
         # On CUDA the frame build (event wait + pinned->AVFrame copy,
@@ -258,7 +259,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         gpu_async = use_gpu and gpu_stitch.async_d2h
         n_sess = enc_sessions
         if n_sess is None:
-            n_sess = 3 if (gpu_async and "nvenc" in codec) else 1
+            n_sess = NVENC_SESSIONS if (gpu_async and "nvenc" in codec) else 1
         multi_enc = gpu_async and n_sess > 1 and "nvenc" in codec
         stages = []
         if multi_enc:
@@ -270,8 +271,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             # dts stays monotonic across seams) and the muxer re-serializes
             # chunks in order. Sessions with identical settings emit
             # identical SPS/PPS, so one extradata serves the whole track.
-            chunk = max(1, int(round(2 * float(fps))))     # ~2 s per chunk
-            sess_qs = [queue.Queue(maxsize=chunk + 8) for _ in range(n_sess)]
+            chunk = max(1, int(round(ENC_CHUNK_SECONDS * float(fps))))
+            sess_qs = [queue.Queue(maxsize=chunk + 2 * PIPELINE_QUEUE_FRAMES)
+                       for _ in range(n_sess)]
             mux_q: "queue.Queue" = queue.Queue()
 
             def _builder():
@@ -365,7 +367,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             stages = [_builder] + \
                 [(lambda k=k: _session(k)) for k in range(n_sess)] + [_muxer]
         elif gpu_async:
-            frame_q: "queue.Queue" = queue.Queue(maxsize=4)
+            frame_q: "queue.Queue" = queue.Queue(maxsize=PIPELINE_QUEUE_FRAMES)
 
             def _builder():
                 try:
@@ -433,7 +435,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
                                                fmt=dec_fmt, hardware=hardware,
                                                alloc=pool.alloc if pool else None),
-                                    size=4):
+                                    size=PIPELINE_QUEUE_FRAMES):
             _feed((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
             done += 1
             if progress:

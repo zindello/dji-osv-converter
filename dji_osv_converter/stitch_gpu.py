@@ -75,7 +75,9 @@ class PinnedInputPool:
     ring is sized past the deepest queue chain so alloc() rarely waits.
     """
 
-    def __init__(self, fh: int, fw: int, slots: int = 16):
+    def __init__(self, fh: int, fw: int, slots: int | None = None):
+        from .constants import PINNED_INPUT_SLOTS
+        slots = PINNED_INPUT_SLOTS if slots is None else slots
         import threading
         self._slots = [_PinnedSlot(fh, fw) for _ in range(slots)]
         self._i = 0
@@ -529,7 +531,7 @@ class GpuStitcher:
         """True when ``stitch_yuv_async`` is available (CUDA + uint16 cast)."""
         return self.dev.type == "cuda" and self._u16
 
-    def input_pool(self, slots: int = 16) -> "PinnedInputPool | None":
+    def input_pool(self, slots: int | None = None) -> "PinnedInputPool | None":
         """A pinned staging pool for the decoder to fill (CUDA p010 path only).
 
         Pass its ``alloc`` to ``iter_pairs``; None where it wouldn't help.
@@ -538,9 +540,11 @@ class GpuStitcher:
             return None
         return PinnedInputPool(self.fh, self.fw, slots)
 
-    def _ensure_async(self, slots: int = 6):
+    def _ensure_async(self, slots: int | None = None):
         if self._down_stream is None:
             import queue as _queue
+            from .constants import ASYNC_D2H_SLOTS
+            slots = ASYNC_D2H_SLOTS if slots is None else slots
             self._down_stream = torch.cuda.Stream()
             self._out_pool = _queue.Queue()
             for _ in range(slots):

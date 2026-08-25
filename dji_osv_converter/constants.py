@@ -138,10 +138,43 @@ TRC_GAMMA_FALLBACK = 2.2
 BITRATE_BPP = 0.25
 
 
+# ---- Pipeline concurrency (CUDA) --------------------------------------------
+# None of these are readable from hardware or the OSV; they are the knobs of
+# the threaded GPU pipeline, sized on the V100 box (docs/architecture.md).
+
+# [ASSUMED] Parallel NVENC sessions on CUDA. One HEVC session occupies one
+# NVENC engine; datacenter Volta/Pascal parts have 3 and NVML exposes no
+# engine-count query. Correct (just not faster) on 1-engine GPUs, where
+# sessions timeslice. Override per call via convert(enc_sessions=...).
+NVENC_SESSIONS = 3
+
+# [ASSUMED] Seconds of video per closed GOP chunk in session-parallel encode.
+# Each chunk opens with a forced IDR: shorter chunks spread load faster but
+# cost bitrate (2 s measured ~+6% file size vs a single session's ~8 s GOP).
+ENC_CHUNK_SECONDS = 2.0
+
+# [ASSUMED] Bounded-queue depths, sized so no stage starves while memory
+# stays modest: stage handoff queues (frames), per-decode-worker queues
+# (fisheye frames), pinned H2D staging slots (>= prefetch chain: 2/pair x 4
+# prefetched + 2 x 3 worker-queued + in-flight), pinned D2H slots
+# (> stage queue + frames in flight on the copy stream).
+PIPELINE_QUEUE_FRAMES = 4
+DECODE_WORKER_QUEUE = 3
+PINNED_INPUT_SLOTS = 16
+ASYNC_D2H_SLOTS = 6
+
+# [ASSUMED] Packets fed to the hevc_cuvid probe before concluding it cannot
+# decode this file (the decoder has multi-packet latency before frame 1).
+CUVID_PROBE_PACKETS = 64
+
+
 __all__ = [
     "K_PLAIN", "C_UP_FORMAT", "QUAT_ORDER", "WORLD_UP", "WORLD_FWD",
     "EXTRINSIC_SOURCE", "EXTRINSIC_ORDER",
     "SEAM_OVERLAP_RATIO", "DEFAULT_FOV_DEG", "FEATHER_FRACTION",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
+    "NVENC_SESSIONS", "ENC_CHUNK_SECONDS", "PIPELINE_QUEUE_FRAMES",
+    "DECODE_WORKER_QUEUE", "PINNED_INPUT_SLOTS", "ASYNC_D2H_SLOTS",
+    "CUVID_PROBE_PACKETS",
 ]

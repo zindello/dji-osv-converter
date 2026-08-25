@@ -139,6 +139,25 @@ def _video_streams(container):
     return vids[:2]
 
 
+def _open_stream(path, si: int, start: int, hwaccel=None):
+    """Open one fisheye stream for streaming decode from ``start``.
+
+    Returns ``(container, stream, rate, time_base)`` — the shared preamble of
+    every decode worker.
+    """
+    c = av.open(str(path), hwaccel=hwaccel) if hwaccel else av.open(str(path))
+    s = _video_streams(c)[si]
+    rate, tb = float(s.average_rate), s.time_base
+    if start > 0:
+        c.seek(int(start / rate / tb), stream=s, backward=True, any_frame=False)
+    return c, s, rate, tb
+
+
+def _frame_index(pts, tb, rate) -> int:
+    """Frame number for a pts on this stream's timeline."""
+    return int(round(float(pts * tb) * rate))
+
+
 def _iter_pairs_threaded(path, start: int, count: int | None, worker,
                          wargs=()):
     """Drive one decode worker per fisheye stream, zipping their outputs.
@@ -148,9 +167,11 @@ def _iter_pairs_threaded(path, start: int, count: int | None, worker,
     """
     import threading
 
+    from .constants import DECODE_WORKER_QUEUE
+
     stop = threading.Event()
-    qa: "queue.Queue" = queue.Queue(maxsize=3)
-    qb: "queue.Queue" = queue.Queue(maxsize=3)
+    qa: "queue.Queue" = queue.Queue(maxsize=DECODE_WORKER_QUEUE)
+    qb: "queue.Queue" = queue.Queue(maxsize=DECODE_WORKER_QUEUE)
     workers = [
         threading.Thread(target=worker,
                          args=(path, 0, start, count, qa, stop, *wargs), daemon=True),
@@ -237,7 +258,7 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
         for fa, fb in zip(ca.decode(sa), cb.decode(sb)):
             if fa.pts is None or fb.pts is None:
                 continue
-            idx = int(round(float(fa.pts * sa.time_base) * float(sa.average_rate)))
+            idx = _frame_index(fa.pts, sa.time_base, float(sa.average_rate))
             if idx < start:
                 continue
             if count is not None and idx >= start + count:

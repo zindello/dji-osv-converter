@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 
-import cv2
 import numpy as np
 
 from .calibration import CameraMap
