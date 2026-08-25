@@ -82,11 +82,17 @@ class GpuStitcher:
 
         w = seam_weights(cams, band_px).astype(np.float32)           # (H, W) in [0,1]
         self.w3 = torch.from_numpy(w)[None, None].to(self.dev)       # (1,1,H,W)
-        # Seam-flow band bounds (even-aligned for the half-res chroma). The
-        # per-frame flow statics are built lazily on first seam_flow use.
+        # Seam-flow band bounds (even-aligned for the half-res chroma), inner
+        # blend-band mask (at 1/4 width, for the dynamic-seam cost) and lens
+        # orientation. The per-frame flow statics build lazily on first use.
         from .stitcher import band_rows
         r0, r1 = band_rows(w)
-        self._sf_rows = (r0 - r0 % 2, r1 + r1 % 2)
+        r0, r1 = r0 - r0 % 2, r1 + r1 % 2
+        self._sf_rows = (r0, r1)
+        wcb = w[r0:r1]
+        inner = (wcb > 0.001) & (wcb < 0.999)
+        self._sf_inner4 = inner.reshape(inner.shape[0], -1, 4).all(axis=2)
+        self._sf_cam0_top = bool(wcb[0].mean() >= 0.5)
         self._sf = None
         # static overlap mask, pooled to 1/8 (exposure works at low res)
         self.ov8 = F.avg_pool2d(self.valid[0] * self.valid[1], 8)
@@ -347,7 +353,23 @@ class GpuStitcher:
         Yb[:, :, r0:r1] = gs(Yb, sf["base"] + o10 * t1)
         UVa[:, :, r0 // 2:r1 // 2] = gs(UVa, sf["baseh"] + o01h * t0h)
         UVb[:, :, r0 // 2:r1 // 2] = gs(UVb, sf["baseh"] + o10h * t1h)
-        return Ya, UVa, Yb, UVb
+
+        # Dynamic seam: flow aligns what both lenses see, but near an object
+        # they see different SIDES of it (occlusion), and the wide cross-fade
+        # dissolves it into the background. Route a min-disagreement path
+        # through the morphed band and feather narrowly around it instead.
+        from .stitcher import seam_path
+        from .constants import SEAM_DYN_FEATHER_PX
+        d4 = F.avg_pool2d((Ya[:, :, r0:r1] - Yb[:, :, r0:r1]).abs(), (1, 4))[0, 0]
+        cost = d4.cpu().numpy().astype(np.float32)
+        seam = seam_path(np.where(self._sf_inner4, cost, 1e6).astype(np.float32), W)
+        seam_t = torch.from_numpy(seam).to(self.dev)
+        yy = torch.arange(bh, device=self.dev, dtype=torch.float32)[:, None]
+        wd = (0.5 + (seam_t[None, :] - yy) / SEAM_DYN_FEATHER_PX).clamp(0, 1)
+        if not self._sf_cam0_top:
+            wd = 1.0 - wd
+        wd = wd[None, None]
+        return Ya, UVa, Yb, UVb, wd, F.avg_pool2d(wd, 2)
 
     def _spatial_gain(self, Ya, Yb, max_gain: float):
         """Smooth luma gain field from the overlap, at low res.
@@ -470,13 +492,20 @@ class GpuStitcher:
             rs = None
         Ya, UVa = self._warp_planes(y0, 0, rs)
         Yb, UVb = self._warp_planes(y1, 1, rs)
+        sfw = None
         if seam_flow:
-            Ya, UVa, Yb, UVb = self._seam_flow_apply(Ya, UVa, Yb, UVb)
+            Ya, UVa, Yb, UVb, wd, wdh = self._seam_flow_apply(Ya, UVa, Yb, UVb)
+            sfw = (wd, wdh)
         if exposure:
             expose = self._expose_wb if wb else self._expose_luma
             Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)
         Y = torch.lerp(Yb, Ya, self.w3)       # fused blend (see blend())
         UV = torch.lerp(UVb, UVa, self.w3h)
+        if sfw is not None:                   # narrow dynamic seam in the band
+            r0, r1 = self._sf_rows
+            Y[:, :, r0:r1] = torch.lerp(Yb[:, :, r0:r1], Ya[:, :, r0:r1], sfw[0])
+            UV[:, :, r0 // 2:r1 // 2] = torch.lerp(UVb[:, :, r0 // 2:r1 // 2],
+                                                   UVa[:, :, r0 // 2:r1 // 2], sfw[1])
         if not np.allclose(R, np.eye(3), atol=1e-9):
             gf = self._level_grid(R)
             gh = gf[:, ::2, ::2, :].contiguous()

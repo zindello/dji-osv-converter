@@ -52,6 +52,9 @@
                     <a class="function" href="#seam_flow_fields">seam_flow_fields</a>
             </li>
             <li>
+                    <a class="function" href="#seam_path">seam_path</a>
+            </li>
+            <li>
                     <a class="function" href="#seam_weights">seam_weights</a>
             </li>
             <li>
@@ -232,6 +235,31 @@ full res by the caller.</p>
     <a class="headerlink" href="#seam_flow_fields"></a>
     
             <div class="docstring"><p>Full-band-res (h, w, 2) pixel-displacement fields (see seam_flow_small).</p>
+</div>
+
+
+                </section>
+                <section id="seam_path">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">seam_path</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">cost</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>, </span><span class="param"><span class="n">out_w</span><span class="p">:</span> <span class="nb">int</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#seam_path"></a>
+    
+            <div class="docstring"><p>Min-disagreement seam row per column through the blend band.</p>
+
+<p><code>cost</code> is (band_h, n) - post-morph |A-B|, already masked to the true
+blend band (large values outside it). Dynamic programming finds the
+cheapest left-to-right path with |dy| &lt;= 1 per column step; the path is
+then Gaussian-smoothed and upsampled to <code>out_w</code> columns.</p>
+
+<p>This is what handles OCCLUSION at the seam: optical flow aligns what both
+lenses can see, but near an object they see different sides of it, and
+any wide cross-fade dissolves the object (transparency ghosting). The
+narrow feather around this path cuts where the lenses actually agree.</p>
 </div>
 
 

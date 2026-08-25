@@ -269,6 +269,42 @@ def seam_flow_fields(gray_a: np.ndarray, gray_b: np.ndarray,
     return up(small[0]), up(small[1])
 
 
+def seam_path(cost: np.ndarray, out_w: int) -> np.ndarray:
+    """Min-disagreement seam row per column through the blend band.
+
+    ``cost`` is (band_h, n) - post-morph |A-B|, already masked to the true
+    blend band (large values outside it). Dynamic programming finds the
+    cheapest left-to-right path with |dy| <= 1 per column step; the path is
+    then Gaussian-smoothed and upsampled to ``out_w`` columns.
+
+    This is what handles OCCLUSION at the seam: optical flow aligns what both
+    lenses can see, but near an object they see different sides of it, and
+    any wide cross-fade dissolves the object (transparency ghosting). The
+    narrow feather around this path cuts where the lenses actually agree.
+    """
+    from .constants import SEAM_DYN_COLS, SEAM_DYN_SIGMA
+    h, _ = cost.shape
+    cs = cv2.resize(cost, (SEAM_DYN_COLS, h), interpolation=cv2.INTER_AREA)
+    n = cs.shape[1]
+    D = cs.copy()
+    for x in range(1, n):
+        prev = D[:, x - 1]
+        m = np.minimum(np.minimum(np.roll(prev, 1), prev), np.roll(prev, -1))
+        m[0] = min(prev[0], prev[1])
+        m[-1] = min(prev[-1], prev[-2])
+        D[:, x] = cs[:, x] + m
+    path = np.zeros(n, dtype=np.int32)
+    path[-1] = int(np.argmin(D[:, -1]))
+    for x in range(n - 2, -1, -1):
+        p = path[x + 1]
+        lo, hi = max(p - 1, 0), min(p + 2, h)
+        path[x] = lo + int(np.argmin(D[lo:hi, x]))
+    pf = cv2.GaussianBlur(path.astype(np.float32).reshape(1, -1),
+                          (0, 0), SEAM_DYN_SIGMA).ravel()
+    return np.interp(np.arange(out_w), np.linspace(0, out_w - 1, n),
+                     pf).astype(np.float32)
+
+
 def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
                weights: np.ndarray, scale: float | None = None) -> np.ndarray:
     """Blend with band-limited optical-flow correction for parallax.
@@ -309,9 +345,20 @@ def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
     m1 = cv2.remap(B, gx + f10[..., 0] * t1, gy + f10[..., 1] * t1,
                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
+    # Dynamic seam + narrow feather instead of the wide cross-fade (see
+    # seam_path for why: occlusion makes the wide fade dissolve near objects).
+    from .constants import SEAM_DYN_FEATHER_PX
+    diff = np.abs(m0.astype(np.int16) - m1.astype(np.int16)).max(axis=2).astype(np.float32)
+    inner = (wc > 0.001) & (wc < 0.999)
+    seam = seam_path(np.where(inner, diff, 1e6).astype(np.float32), w)
+    yy = np.arange(h, dtype=np.float32)[:, None]
+    wd = np.clip(0.5 + (seam[None, :] - yy) / SEAM_DYN_FEATHER_PX, 0.0, 1.0)
+    if wc[0].mean() < 0.5:          # orient: give each side to the lens that owns it
+        wd = 1.0 - wd
+
     a = weights[..., None].astype(np.float32)
     out = warped[0].astype(np.float32) * a + warped[1].astype(np.float32) * (1.0 - a)
-    out[r0:r1] = m0.astype(np.float32) * a[r0:r1] + m1.astype(np.float32) * (1.0 - a[r0:r1])
+    out[r0:r1] = m0.astype(np.float32) * wd[..., None] + m1.astype(np.float32) * (1.0 - wd[..., None])
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -343,5 +390,5 @@ def coverage_report(cams: list[CameraMap]) -> dict:
 
 
 __all__ = ["warp", "blend", "multiband_blend", "flow_blend", "band_rows",
-           "seam_flow_small", "seam_flow_fields", "seam_weights",
+           "seam_flow_small", "seam_flow_fields", "seam_path", "seam_weights",
            "stitch", "match_exposure", "coverage_report"]
