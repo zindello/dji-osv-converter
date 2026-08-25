@@ -61,12 +61,19 @@ class GpuStitcher:
     def __init__(self, cams: list[CameraMap], band_px: float,
                  width: int, height: int, device: str | None = None,
                  lsc_gain: list[np.ndarray] | None = None,
-                 rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840)):
+                 rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840),
+                 input_fmt: str = "yuv420p10le"):
         if torch is None:
             raise RuntimeError("torch is not installed")
         dev = pick_device(device)
         self.dev = torch.device(dev)
         self.W, self.H = width, height
+        if input_fmt not in ("yuv420p10le", "p010le"):
+            raise ValueError(f"unsupported input_fmt {input_fmt!r}")
+        # p010 input (NVDEC's native download layout): samples top-aligned
+        # (value << 6, exact to undo in fp32) with interleaved chroma rows;
+        # _split_yuv unpacks on-device, which is free next to a CPU swscale.
+        self.input_p010 = input_fmt == "p010le"
 
         # warp grids: map_x/map_y (pixel coords in the source fisheye) -> the
         # normalised [-1, 1] sampling grid grid_sample expects, uploaded once.
@@ -229,6 +236,13 @@ class GpuStitcher:
     def _split_yuv(self, packed: np.ndarray):
         fh, fw = self.fh, self.fw
         t = torch.from_numpy(np.ascontiguousarray(packed)).to(self.dev).float()
+        if self.input_p010:
+            t = t * (1.0 / 64.0)          # top-aligned -> 10-bit values, exact
+            Y = t[:fh].view(1, 1, fh, fw)
+            uv = t[fh:fh + fh // 2]       # (fh/2, fw), U/V interleaved
+            U = uv[:, 0::2].unsqueeze(0).unsqueeze(0)
+            V = uv[:, 1::2].unsqueeze(0).unsqueeze(0)
+            return Y, U, V
         Y = t[:fh].view(1, 1, fh, fw)
         U = t[fh:fh + fh // 4].reshape(1, 1, fh // 2, fw // 2)
         V = t[fh + fh // 4:fh + fh // 2].reshape(1, 1, fh // 2, fw // 2)

@@ -25,7 +25,7 @@ import numpy as np
 
 from .constants import BITRATE_BPP
 from .pipeline import Stitcher360
-from .decode import iter_pairs, prefetch
+from .decode import iter_pairs, prefetch, gpu_decode_fmt
 from .spherical import inject_spherical
 from . import stitch_gpu
 
@@ -105,13 +105,17 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     # place behind this flag for future non-DJI sources.
     use_rs = False
     if use_gpu:
+        # 10-bit YUV in the decoder's cheapest layout: planar, or NVDEC's
+        # native p010 (skips a ~70 ms/frame swscale; unpacked on-device).
+        gpu_fmt = gpu_decode_fmt(hardware)
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
             width=width, height=height,
             lsc_gain=stitcher.lsc_gains() if lsc else None,
             rs_tables=stitcher.rs_tables() if use_rs else None,
-            fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height))
+            fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
+            input_fmt=gpu_fmt)
 
     src = av.open(input_osv)
     vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
@@ -161,10 +165,11 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             pkt.stream = a_out
             out.mux(pkt)
 
-    # The GPU path stays 10-bit YUV end to end: decode native yuv420p10le,
-    # stitch on-device, emit p010le planes straight to the encoder - no CPU
-    # colour conversion, no 8-bit truncation. The CPU path stays 8-bit BGR.
-    dec_fmt = "yuv420p10le" if use_gpu else "bgr24"
+    # The GPU path stays 10-bit YUV end to end: decode in the platform's
+    # cheapest 10-bit layout (planar, or NVDEC-native p010), stitch on-device,
+    # emit p010le planes straight to the encoder - no CPU colour conversion,
+    # no 8-bit truncation. The CPU path stays 8-bit BGR.
+    dec_fmt = gpu_fmt if use_gpu else "bgr24"
 
     def _stitch(idx, f0, f1):
         R = stitcher.levelling_for(idx)

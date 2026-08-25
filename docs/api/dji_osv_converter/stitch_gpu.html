@@ -46,6 +46,9 @@
                                 <a class="variable" href="#GpuStitcher.dev">dev</a>
                         </li>
                         <li>
+                                <a class="variable" href="#GpuStitcher.input_p010">input_p010</a>
+                        </li>
+                        <li>
                                 <a class="variable" href="#GpuStitcher.grid">grid</a>
                         </li>
                         <li>
@@ -156,7 +159,7 @@ device changes. Construct only when <code><a href="#available">available()</a></
                             <div id="GpuStitcher.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">GpuStitcher</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">band_px</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lsc_gain</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rs_tables</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">fisheye_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span></span>)</span>
+        <span class="name">GpuStitcher</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">band_px</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lsc_gain</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rs_tables</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">fisheye_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span>,</span><span class="param">	<span class="n">input_fmt</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'yuv420p10le'</span></span>)</span>
 
         
     </div>
@@ -172,6 +175,17 @@ device changes. Construct only when <code><a href="#available">available()</a></
         
     </div>
     <a class="headerlink" href="#GpuStitcher.dev"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.input_p010" class="classattr">
+                                <div class="attr variable">
+            <span class="name">input_p010</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.input_p010"></a>
     
     
 

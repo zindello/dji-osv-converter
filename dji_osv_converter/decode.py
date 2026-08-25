@@ -74,6 +74,64 @@ def _hwaccel():
     return None
 
 
+def gpu_decode_fmt(hardware: bool = True) -> str:
+    """Cheapest 10-bit format the GPU stitch can ingest on this platform.
+
+    NVDEC hands frames to system memory as ``p010le``; converting them to
+    planar costs a ~70 ms/frame swscale pass at 3840x3840, while the GPU can
+    unpack p010 natively (top-aligned samples, interleaved chroma) for free.
+    Everywhere else the planar path is already the cheap one (VideoToolbox
+    frames convert losslessly; software decode emits planar directly).
+    """
+    hw = _hwaccel() if hardware else None
+    if hw is not None and sys.platform == "linux":
+        return "p010le"
+    return "yuv420p10le"
+
+
+def _plane_u16(plane, width: int) -> np.ndarray:
+    """A (height, width) uint16 view of a frame plane, stride handled.
+
+    ``width`` is in uint16 samples: the luma width for Y, but 2x the reported
+    plane width for p010's UV plane (U and V interleave in one row).
+    """
+    ls = plane.line_size // 2
+    a = np.frombuffer(plane, np.uint16).reshape(plane.height, ls)
+    return a[:, :width]
+
+
+def _p010_packed(fr) -> np.ndarray:
+    """Pack a p010le frame as one (1.5*H, W) uint16 array (Y rows, then UV).
+
+    Same footprint as the planar packing the stitcher takes, but samples are
+    top-aligned (value << 6) and chroma is interleaved; GpuStitcher unpacks
+    it on-device (``input_fmt="p010le"``).
+    """
+    return np.vstack([_plane_u16(fr.planes[0], fr.width),
+                      _plane_u16(fr.planes[1], fr.width)])
+
+
+def _frame_p010(fr) -> np.ndarray:
+    """A p010-packed array from a decoded frame, whatever format it landed in.
+
+    The fast path reads the p010le planes straight out of the NVDEC download.
+    The fallback (hwaccel silently fell back to software, so frames arrive
+    planar) shifts and interleaves on CPU - slower, but keeps the format
+    contract with the stitcher intact.
+    """
+    if fr.format.name == "p010le":
+        return _p010_packed(fr)
+    arr = fr.to_ndarray(format="yuv420p10le")
+    fh, fw = fr.height, fr.width
+    out = np.empty((fh + fh // 2, fw), np.uint16)
+    np.left_shift(arr[:fh], 6, out=out[:fh])
+    U = arr[fh:fh + fh // 4].reshape(fh // 2, fw // 2)
+    V = arr[fh + fh // 4:].reshape(fh // 2, fw // 2)
+    out[fh:, 0::2] = U << 6
+    out[fh:, 1::2] = V << 6
+    return out
+
+
 def _video_streams(container):
     vids = [s for s in container.streams.video
             if s.codec_context.name != "mjpeg"]
@@ -114,6 +172,8 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
             for s, c in ((sa, ca), (sb, cb)):
                 c.seek(int(start / fps / s.time_base), stream=s,
                        backward=True, any_frame=False)
+        to_arr = _frame_p010 if fmt == "p010le" else (
+            lambda fr: fr.to_ndarray(format=fmt))
         for fa, fb in zip(ca.decode(sa), cb.decode(sb)):
             if fa.pts is None or fb.pts is None:
                 continue
@@ -122,7 +182,7 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
                 continue
             if count is not None and idx >= start + count:
                 break
-            yield idx, fa.to_ndarray(format=fmt), fb.to_ndarray(format=fmt)
+            yield idx, to_arr(fa), to_arr(fb)
     finally:
         ca.close()
         cb.close()
