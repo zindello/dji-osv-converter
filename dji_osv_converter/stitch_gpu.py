@@ -357,17 +357,22 @@ class GpuStitcher:
         # Dynamic seam: flow aligns what both lenses see, but near an object
         # they see different SIDES of it (occlusion), and the wide cross-fade
         # dissolves it into the background. Route a min-disagreement path
-        # through the morphed band and feather narrowly around it instead.
-        from .stitcher import seam_path
+        # through the morphed band and feather narrowly around it - GATED to
+        # the columns where the lenses actually disagree; elsewhere the
+        # static wide fade stays (a narrow cut there draws a visible ring).
+        from .stitcher import seam_gate, seam_path
         from .constants import SEAM_DYN_FEATHER_PX
         d4 = F.avg_pool2d((Ya[:, :, r0:r1] - Yb[:, :, r0:r1]).abs(), (1, 4))[0, 0]
-        cost = d4.cpu().numpy().astype(np.float32)
+        cost = d4.cpu().numpy().astype(np.float32) * 0.25       # 10-bit -> 8-bit
         seam = seam_path(np.where(self._sf_inner4, cost, 1e6).astype(np.float32), W)
+        gate = seam_gate(cost, self._sf_inner4, W)
         seam_t = torch.from_numpy(seam).to(self.dev)
+        g_t = torch.from_numpy(gate).to(self.dev)[None, :]
         yy = torch.arange(bh, device=self.dev, dtype=torch.float32)[:, None]
         wd = (0.5 + (seam_t[None, :] - yy) / SEAM_DYN_FEATHER_PX).clamp(0, 1)
         if not self._sf_cam0_top:
             wd = 1.0 - wd
+        wd = g_t * wd + (1.0 - g_t) * self.w3[0, 0, r0:r1]
         wd = wd[None, None]
         return Ya, UVa, Yb, UVb, wd, F.avg_pool2d(wd, 2)
 

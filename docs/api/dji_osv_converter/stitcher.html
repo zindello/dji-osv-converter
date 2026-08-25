@@ -55,6 +55,9 @@
                     <a class="function" href="#seam_path">seam_path</a>
             </li>
             <li>
+                    <a class="function" href="#seam_gate">seam_gate</a>
+            </li>
+            <li>
                     <a class="function" href="#seam_weights">seam_weights</a>
             </li>
             <li>
@@ -260,6 +263,27 @@ then Gaussian-smoothed and upsampled to <code>out_w</code> columns.</p>
 lenses can see, but near an object they see different sides of it, and
 any wide cross-fade dissolves the object (transparency ghosting). The
 narrow feather around this path cuts where the lenses actually agree.</p>
+</div>
+
+
+                </section>
+                <section id="seam_gate">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">seam_gate</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">diff</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>, </span><span class="param"><span class="n">inner</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>, </span><span class="param"><span class="n">out_w</span><span class="p">:</span> <span class="nb">int</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#seam_gate"></a>
+    
+            <div class="docstring"><p>Per-column mix factor [0,1] between wide fade (0) and narrow cut (1).</p>
+
+<p>A narrow cut through photometrically-mismatched but ALIGNED areas (flat
+floor, walls) draws a visible line - on the sphere, a ring around the
+whole seam that jumps as the path re-solves per frame. The wide fade is
+invisible there by construction. So the narrow dynamic seam applies only
+in columns whose post-morph disagreement says the parallax is real.</p>
 </div>
 
 

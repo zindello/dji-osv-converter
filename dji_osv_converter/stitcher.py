@@ -305,6 +305,33 @@ def seam_path(cost: np.ndarray, out_w: int) -> np.ndarray:
                      pf).astype(np.float32)
 
 
+def seam_gate(diff: np.ndarray, inner: np.ndarray, out_w: int) -> np.ndarray:
+    """Per-column mix factor [0,1] between wide fade (0) and narrow cut (1).
+
+    A narrow cut through photometrically-mismatched but ALIGNED areas (flat
+    floor, walls) draws a visible line - on the sphere, a ring around the
+    whole seam that jumps as the path re-solves per frame. The wide fade is
+    invisible there by construction. So the narrow dynamic seam applies only
+    in columns whose post-morph disagreement says the parallax is real.
+    """
+    from .constants import (SEAM_DYN_COLS, SEAM_DYN_GATE_HI, SEAM_DYN_GATE_LO,
+                            SEAM_DYN_GATE_SIGMA)
+    # Column score = MEAN blurred disagreement over the band. A max spikes on
+    # single noisy pixels and saturates the gate (measured: 92% of columns
+    # read "parallax" on a frame with one bar); the mean separates cleanly
+    # (median ~6 on aligned flat areas vs 20-40 at real parallax).
+    db = cv2.GaussianBlur(np.where(inner, diff, 0.0).astype(np.float32), (0, 0), 3)
+    n = np.maximum(inner.sum(axis=0), 1)
+    score = (db.sum(axis=0) / n).astype(np.float32)                # (w,)
+    s = cv2.resize(score.reshape(1, -1), (SEAM_DYN_COLS, 1),
+                   interpolation=cv2.INTER_AREA)
+    s = cv2.GaussianBlur(s, (0, 0), sigmaX=SEAM_DYN_GATE_SIGMA, sigmaY=0.1).ravel()
+    g = np.clip((s - SEAM_DYN_GATE_LO) / (SEAM_DYN_GATE_HI - SEAM_DYN_GATE_LO),
+                0.0, 1.0)
+    return np.interp(np.arange(out_w), np.linspace(0, out_w - 1, len(g)),
+                     g).astype(np.float32)
+
+
 def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
                weights: np.ndarray, scale: float | None = None) -> np.ndarray:
     """Blend with band-limited optical-flow correction for parallax.
@@ -345,17 +372,20 @@ def flow_blend(warped: list[np.ndarray], cams: list[CameraMap],
     m1 = cv2.remap(B, gx + f10[..., 0] * t1, gy + f10[..., 1] * t1,
                    cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
-    # Dynamic seam + narrow feather instead of the wide cross-fade (see
-    # seam_path for why: occlusion makes the wide fade dissolve near objects).
+    # Dynamic seam + narrow feather where the lenses DISAGREE; the static wide
+    # fade where they agree (see seam_path and seam_gate for why both exist).
     from .constants import SEAM_DYN_FEATHER_PX
     diff = np.abs(m0.astype(np.int16) - m1.astype(np.int16)).max(axis=2).astype(np.float32)
     inner = (wc > 0.001) & (wc < 0.999)
-    seam = seam_path(np.where(inner, diff, 1e6).astype(np.float32), w)
+    cost = np.where(inner, diff, 1e6).astype(np.float32)
+    seam = seam_path(cost, w)
+    g = seam_gate(diff, inner, w)                       # (w,) in [0,1]
     yy = np.arange(h, dtype=np.float32)[:, None]
     wd = np.clip(0.5 + (seam[None, :] - yy) / SEAM_DYN_FEATHER_PX, 0.0, 1.0)
     if wc[0].mean() < 0.5:          # orient: give each side to the lens that owns it
         wd = 1.0 - wd
-
+    wd = g[None, :] * wd + (1.0 - g[None, :]) * wc      # gate: narrow cut only
+                                                        # where parallax is real
     a = weights[..., None].astype(np.float32)
     out = warped[0].astype(np.float32) * a + warped[1].astype(np.float32) * (1.0 - a)
     out[r0:r1] = m0.astype(np.float32) * wd[..., None] + m1.astype(np.float32) * (1.0 - wd[..., None])
@@ -390,5 +420,6 @@ def coverage_report(cams: list[CameraMap]) -> dict:
 
 
 __all__ = ["warp", "blend", "multiband_blend", "flow_blend", "band_rows",
-           "seam_flow_small", "seam_flow_fields", "seam_path", "seam_weights",
+           "seam_flow_small", "seam_flow_fields", "seam_path", "seam_gate",
+           "seam_weights",
            "stitch", "match_exposure", "coverage_report"]

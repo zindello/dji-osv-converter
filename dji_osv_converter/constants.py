@@ -128,6 +128,13 @@ SEAM_FLOW_MAX_SHIFT_PX = 60.0 # clamp on the per-pixel morph (full-res px)
 SEAM_DYN_FEATHER_PX = 24.0    # cross-fade width around the dynamic seam
 SEAM_DYN_COLS = 1920          # path solved at this many columns, upsampled
 SEAM_DYN_SIGMA = 9.0          # path smoothing sigma (in path-grid columns)
+# The narrow cut is GATED to columns where the lenses actually disagree
+# (real parallax): everywhere else the static wide fade is used unchanged -
+# a narrow cut through photometrically-mismatched flat areas otherwise draws
+# a visible ring around the whole sphere that jumps per frame (user-caught).
+SEAM_DYN_GATE_LO = 10.0       # column-mean 8-bit disagreement: gating begins
+SEAM_DYN_GATE_HI = 20.0       # full narrow-cut above this
+SEAM_DYN_GATE_SIGMA = 30.0    # gate smoothing along the seam (path-grid cols)
 
 
 # ---- Stabilisation ----------------------------------------------------------
@@ -171,6 +178,7 @@ __all__ = [
     "SEAM_FLOW_SCALE", "SEAM_FLOW_MARGIN_PX", "SEAM_FLOW_SIGMA_ALONG",
     "SEAM_FLOW_SIGMA_ACROSS", "SEAM_FLOW_MAX_SHIFT_PX",
     "SEAM_DYN_FEATHER_PX", "SEAM_DYN_COLS", "SEAM_DYN_SIGMA",
+    "SEAM_DYN_GATE_LO", "SEAM_DYN_GATE_HI", "SEAM_DYN_GATE_SIGMA",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
 ]
