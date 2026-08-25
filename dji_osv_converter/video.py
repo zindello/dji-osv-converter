@@ -23,8 +23,8 @@ from pathlib import Path
 import av
 import numpy as np
 
-from .constants import (BITRATE_BPP, ENC_CHUNK_SECONDS, NVENC_SESSIONS,
-                        PIPELINE_QUEUE_FRAMES)
+from .constants import (BITRATE_BPP, ENC_CHUNK_SECONDS, PIPELINE_QUEUE_FRAMES,
+                        gpu_engines)
 from .pipeline import Stitcher360
 from .decode import iter_pairs, prefetch, gpu_decode_fmt
 from .spherical import inject_spherical
@@ -89,13 +89,13 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.
 
     ``enc_sessions`` (None = auto): number of parallel NVENC encoder sessions.
-    A single HEVC session runs on ONE of the GPU's NVENC engines; datacenter
-    parts (P100/V100: 3 engines) leave the others idle while the session is
-    the pipeline's limiter. >1 encodes GOP-aligned chunks round-robin on
+    A single HEVC session runs on ONE of the GPU's NVENC engines; multi-engine
+    parts (e.g. V100: 3) leave the others idle while the session is the
+    pipeline's limiter. >1 encodes GOP-aligned chunks round-robin on
     independent sessions and re-serializes the closed-GOP bitstreams at mux
-    (B-frames forced off so dts stays monotonic across seams). Auto picks 3
-    for NVENC-on-CUDA, else 1; single-engine GPUs still produce correct
-    output with >1 (sessions timeslice the engine).
+    (B-frames forced off so dts stays monotonic across seams). Auto reads the
+    card's engine count from ``constants.GPU_ENGINES`` (unknown cards: 1);
+    any count still produces correct output (sessions timeslice the engine).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
@@ -259,7 +259,13 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         gpu_async = use_gpu and gpu_stitch.async_d2h
         n_sess = enc_sessions
         if n_sess is None:
-            n_sess = NVENC_SESSIONS if (gpu_async and "nvenc" in codec) else 1
+            if gpu_async and "nvenc" in codec:
+                # Per-card engine count (constants.GPU_ENGINES) - one HEVC
+                # session saturates one NVENC engine.
+                name = stitch_gpu.torch.cuda.get_device_name(gpu_stitch.dev)
+                n_sess = max(1, gpu_engines(name)["nvenc"])
+            else:
+                n_sess = 1
         multi_enc = gpu_async and n_sess > 1 and "nvenc" in codec
         stages = []
         if multi_enc:

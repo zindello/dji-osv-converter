@@ -27,6 +27,17 @@ Highlights:
   below DJI's rendered jitter, but DJI's true filter shape is unknown.
 - **RS_… rolling-shutter values** `[ASSUMED — never successfully fit]` — the
   RS subsystem ships disabled; see [levelling](levelling.md).
+- **`GPU_ENGINES`** — per-card NVENC/NVDEC engine counts, the dial to turn
+  when the pipeline meets a new GPU: one HEVC session saturates one NVENC
+  engine, so `convert()` runs `nvenc` parallel sessions by default, and
+  `nvdec` records whether multi-clip batching can pay. The V100 row is
+  `[MEASURED]` (utilization logs); other rows are `[ASSUMED]` from NVIDIA's
+  Video Codec SDK matrix — verify with `nvidia-smi` utilization during a
+  convert before trusting. Unknown cards get the conservative
+  single-session default; add a row to speed a new card up.
+- **Pipeline concurrency knobs** `[ASSUMED]` — chunk seconds, queue depths
+  and pinned-slot counts for the threaded CUDA pipeline, sized on the V100
+  box (see [architecture](architecture.md)).
 
 The unit tests in `tests/test_pipeline.py` pin the mathematical properties of
 these constants (orthogonality, the det = −1 reflection, the rocksteady

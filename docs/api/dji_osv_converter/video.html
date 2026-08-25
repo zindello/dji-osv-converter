@@ -102,13 +102,13 @@ indistinguishable from multi-band on this (aligned, ISP-matched) footage and
 ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.</p>
 
 <p><code>enc_sessions</code> (None = auto): number of parallel NVENC encoder sessions.
-A single HEVC session runs on ONE of the GPU's NVENC engines; datacenter
-parts (P100/V100: 3 engines) leave the others idle while the session is
-the pipeline's limiter. &gt;1 encodes GOP-aligned chunks round-robin on
+A single HEVC session runs on ONE of the GPU's NVENC engines; multi-engine
+parts (e.g. V100: 3) leave the others idle while the session is the
+pipeline's limiter. &gt;1 encodes GOP-aligned chunks round-robin on
 independent sessions and re-serializes the closed-GOP bitstreams at mux
-(B-frames forced off so dts stays monotonic across seams). Auto picks 3
-for NVENC-on-CUDA, else 1; single-engine GPUs still produce correct
-output with &gt;1 (sessions timeslice the engine).</p>
+(B-frames forced off so dts stays monotonic across seams). Auto reads the
+card's engine count from <code>constants.GPU_ENGINES</code> (unknown cards: 1);
+any count still produces correct output (sessions timeslice the engine).</p>
 </div>
 
 

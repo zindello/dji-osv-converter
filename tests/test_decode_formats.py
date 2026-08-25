@@ -52,6 +52,29 @@ class TestFramePlanes(unittest.TestCase):
         self.assertTrue(np.all((UV & 63) == 0))
 
 
+class TestGpuEngines(unittest.TestCase):
+    def test_known_cards_and_longest_match(self):
+        from dji_osv_converter.constants import gpu_engines
+        self.assertEqual(gpu_engines("Tesla V100-PCIE-16GB")["nvenc"], 3)
+        self.assertEqual(gpu_engines("Tesla V100-PCIE-16GB")["nvdec"], 1)
+        # "L40S" must match L40, not L4
+        self.assertEqual(gpu_engines("NVIDIA L40S")["nvenc"], 3)
+        self.assertEqual(gpu_engines("NVIDIA L4")["nvenc"], 2)
+
+    def test_unknown_card_is_conservative(self):
+        from dji_osv_converter.constants import GPU_ENGINES_DEFAULT, gpu_engines
+        self.assertEqual(gpu_engines("NVIDIA FutureCard 9000"),
+                         GPU_ENGINES_DEFAULT)
+        self.assertEqual(gpu_engines(None), GPU_ENGINES_DEFAULT)
+        self.assertEqual(GPU_ENGINES_DEFAULT["nvenc"], 1)
+
+    def test_digit_boundary(self):
+        from dji_osv_converter.constants import GPU_ENGINES_DEFAULT, gpu_engines
+        # "RTX A1000" must NOT match the A100 row
+        self.assertEqual(gpu_engines("NVIDIA RTX A1000"), GPU_ENGINES_DEFAULT)
+        self.assertEqual(gpu_engines("NVIDIA A100-SXM4-40GB")["nvdec"], 5)
+
+
 class TestFrameIndex(unittest.TestCase):
     def test_one_tick_per_frame_timeline(self):
         from fractions import Fraction

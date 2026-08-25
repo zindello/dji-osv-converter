@@ -142,11 +142,52 @@ BITRATE_BPP = 0.25
 # None of these are readable from hardware or the OSV; they are the knobs of
 # the threaded GPU pipeline, sized on the V100 box (docs/architecture.md).
 
-# [ASSUMED] Parallel NVENC sessions on CUDA. One HEVC session occupies one
-# NVENC engine; datacenter Volta/Pascal parts have 3 and NVML exposes no
-# engine-count query. Correct (just not faster) on 1-engine GPUs, where
-# sessions timeslice. Override per call via convert(enc_sessions=...).
-NVENC_SESSIONS = 3
+# Per-card video-engine counts. NVML exposes no engine-count query, so this
+# is the dial to turn when the pipeline meets a new GPU: add a row, and the
+# session-parallel encoder (and any future decode/batch tooling) picks it up.
+# Keys match against torch's device name by substring, longest key first
+# (so "L40" wins over "L4" on an L40S). Unknown cards get GPU_ENGINES_DEFAULT
+# - deliberately conservative (single session = the pre-parallel behaviour).
+#
+# nvenc: encode engines - one HEVC session saturates exactly one, so
+#        convert() runs this many parallel sessions by default.
+# nvdec: decode engines - one OSV needs at most 2 decoder instances (two
+#        fisheye streams share one file); the count records whether the
+#        card can decode clips in parallel (batching) beyond that.
+GPU_ENGINES = {
+    # [MEASURED] on this project's V100 box: a lone NVENC session capped at
+    # exactly 33% aggregate (1 of 3 engines at 100%); NVDEC saturates at
+    # ~25 ms/fisheye-pair with both decode workers sharing one engine.
+    "V100": {"nvenc": 3, "nvdec": 1},
+    # [ASSUMED] from NVIDIA's public Video Codec SDK support matrix -
+    # unverified by this codebase; verify with a utilization log
+    # (nvidia-smi -q -d UTILIZATION during a convert) before trusting.
+    "P100": {"nvenc": 3, "nvdec": 1},
+    "T4": {"nvenc": 1, "nvdec": 2},
+    "A10": {"nvenc": 1, "nvdec": 2},
+    "A100": {"nvenc": 0, "nvdec": 5},   # no NVENC: falls back to libx265
+    "L4": {"nvenc": 2, "nvdec": 4},
+    "L40": {"nvenc": 3, "nvdec": 3},
+    "H100": {"nvenc": 0, "nvdec": 7},   # no NVENC
+}
+# [ASSUMED] Unknown card: one session of each - correct everywhere, fast
+# nowhere special. Add a GPU_ENGINES row to turn the dial up.
+GPU_ENGINES_DEFAULT = {"nvenc": 1, "nvdec": 1}
+
+
+def gpu_engines(device_name: str | None) -> dict:
+    """Engine counts for a CUDA device name.
+
+    Longest key first, and the key must not be followed by a further digit,
+    so "A100-SXM4" matches A100 but "RTX A1000" does not, and "L40S" matches
+    L40 rather than L4.
+    """
+    import re
+    if device_name:
+        for key in sorted(GPU_ENGINES, key=len, reverse=True):
+            if re.search(re.escape(key) + r"(?!\d)", device_name):
+                return GPU_ENGINES[key]
+    return GPU_ENGINES_DEFAULT
 
 # [ASSUMED] Seconds of video per closed GOP chunk in session-parallel encode.
 # Each chunk opens with a forced IDR: shorter chunks spread load faster but
@@ -174,7 +215,8 @@ __all__ = [
     "SEAM_OVERLAP_RATIO", "DEFAULT_FOV_DEG", "FEATHER_FRACTION",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
-    "NVENC_SESSIONS", "ENC_CHUNK_SECONDS", "PIPELINE_QUEUE_FRAMES",
+    "GPU_ENGINES", "GPU_ENGINES_DEFAULT", "gpu_engines",
+    "ENC_CHUNK_SECONDS", "PIPELINE_QUEUE_FRAMES",
     "DECODE_WORKER_QUEUE", "PINNED_INPUT_SLOTS", "ASYNC_D2H_SLOTS",
     "CUVID_PROBE_PACKETS",
 ]
