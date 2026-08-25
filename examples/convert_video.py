@@ -60,6 +60,9 @@ def main() -> int:
     ap.add_argument("--pipeline", dest="pipeline", action="store_true", default=None,
                     help="overlap decode/stitch/encode on threads (auto-on for CUDA; "
                          "helps on dedicated GPU + NVENC, not on shared-memory MPS)")
+    ap.add_argument("--enc-sessions", type=int, default=None,
+                    help="parallel NVENC sessions (GOP-chunked; default: 3 on "
+                         "CUDA+NVENC, else 1 - pass 1 to force a single session)")
     args = ap.parse_args()
 
     t = time.time()
@@ -75,7 +78,8 @@ def main() -> int:
                   multiband=args.multiband, exposure=args.exposure,
                   exposure_wb=args.exposure_wb, lsc=args.lsc,
                   levelling=args.levelling, hardware=args.hardware, gpu=args.gpu,
-                  pipeline=args.pipeline, spherical=True, progress=progress)
+                  pipeline=args.pipeline, enc_sessions=args.enc_sessions,
+                  spherical=True, progress=progress)
     dt = time.time() - t
     print(f"\nwrote {out} in {dt:.1f}s")
     return 0

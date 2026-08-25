@@ -63,7 +63,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             hardware: bool = True, multiband: bool = False, exposure: bool = False,
             exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
             audio: bool = True, spherical: bool = True, gpu: bool = True,
-            pipeline: bool | None = None, progress=None) -> str:
+            pipeline: bool | None = None, enc_sessions: int | None = None,
+            progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
     ``count`` limits the number of frames (None = whole clip); ``start`` skips
@@ -85,6 +86,15 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     ``multiband`` defaults off for video: the linear feathered blend is visually
     indistinguishable from multi-band on this (aligned, ISP-matched) footage and
     ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.
+
+    ``enc_sessions`` (None = auto): number of parallel NVENC encoder sessions.
+    A single HEVC session runs on ONE of the GPU's NVENC engines; datacenter
+    parts (P100/V100: 3 engines) leave the others idle while the session is
+    the pipeline's limiter. >1 encodes GOP-aligned chunks round-robin on
+    independent sessions and re-serializes the closed-GOP bitstreams at mux
+    (B-frames forced off so dts stays monotonic across seams). Auto picks 3
+    for NVENC-on-CUDA, else 1; single-engine GPUs still produce correct
+    output with >1 (sessions timeslice the engine).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
@@ -234,6 +244,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         pipeline = use_gpu
 
     done = 0
+    multi_enc = False
     if pipeline:
         enc_q: "queue.Queue" = queue.Queue(maxsize=4)
         enc_done, enc_err = object(), []
@@ -245,8 +256,115 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         # ms/frame). Elsewhere the two-thread layout stays (the M3 numbers
         # were recorded with it, and its encode path is the lighter one).
         gpu_async = use_gpu and gpu_stitch.async_d2h
+        n_sess = enc_sessions
+        if n_sess is None:
+            n_sess = 3 if (gpu_async and "nvenc" in codec) else 1
+        multi_enc = gpu_async and n_sess > 1 and "nvenc" in codec
         stages = []
-        if gpu_async:
+        if multi_enc:
+            # Segment-parallel NVENC: one HEVC session occupies ONE NVENC
+            # engine (the V100 has three; a lone session pegs its engine at
+            # ~59 ms/frame on real content while the others idle). Frames go
+            # to n_sess independent sessions in GOP-sized chunks; each chunk
+            # is a closed GOP (fresh session => leading IDR, B-frames off so
+            # dts stays monotonic across seams) and the muxer re-serializes
+            # chunks in order. Sessions with identical settings emit
+            # identical SPS/PPS, so one extradata serves the whole track.
+            chunk = max(1, int(round(2 * float(fps))))     # ~2 s per chunk
+            sess_qs = [queue.Queue(maxsize=chunk + 8) for _ in range(n_sess)]
+            mux_q: "queue.Queue" = queue.Queue()
+
+            def _builder():
+                try:
+                    while True:
+                        item = enc_q.get()
+                        if item is enc_done:
+                            for q in sess_qs:
+                                q.put(enc_done)
+                            return
+                        pts, result = item
+                        fr = _build_frame(result)
+                        fr.pts = pts
+                        sess_qs[(pts // chunk) % n_sess].put(fr)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+                    for q in sess_qs:
+                        q.put(enc_done)
+
+            def _new_session():
+                ctx = av.CodecContext.create(codec, "w")
+                ctx.width, ctx.height = width, height
+                ctx.pix_fmt = vs.pix_fmt
+                ctx.time_base = vs.time_base
+                ctx.framerate = fps
+                ctx.bit_rate = vs.bit_rate
+                ctx.options = {"bf": "0", "forced-idr": "1"}
+                ctx.flags |= av.codec.context.Flags.global_header
+                return ctx
+
+            def _session(k):
+                # ONE persistent session per worker - NVENC session creation
+                # costs enough that churning one per chunk measurably LOSES
+                # (~20 ms/frame on the short benchmark). Chunk starts get a
+                # forced IDR instead, which keeps every chunk closed; with
+                # bf=0 the packet stream is in pts order, so a packet from a
+                # later chunk proves the earlier ones are complete.
+                pending: dict[int, list] = {}
+
+                def emit_before(cid):
+                    for c in sorted(c for c in pending if c < cid):
+                        mux_q.put((c, pending.pop(c)))
+
+                try:
+                    ctx = _new_session()
+                    while True:
+                        fr = sess_qs[k].get()
+                        if fr is enc_done:
+                            for pkt in ctx.encode(None):
+                                pending.setdefault(pkt.pts // chunk, []).append(pkt)
+                            emit_before(float("inf"))
+                            mux_q.put((enc_done, bytes(ctx.extradata or b"")))
+                            return
+                        if fr.pts % chunk == 0:
+                            # chunk start -> forced IDR (closed chunk)
+                            fr.pict_type = av.video.frame.PictureType.I
+                        for pkt in ctx.encode(fr):
+                            cid = pkt.pts // chunk
+                            pending.setdefault(cid, []).append(pkt)
+                            emit_before(cid)
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+                    mux_q.put((enc_done, b""))
+
+            def _muxer():
+                try:
+                    expected, buf, ends, xset = 0, {}, 0, False
+
+                    def drain():
+                        nonlocal expected
+                        while expected in buf:
+                            for pkt in buf.pop(expected):
+                                pkt.stream = vs
+                                out.mux(pkt)
+                            expected += 1
+
+                    while ends < n_sess:
+                        cid, payload = mux_q.get()
+                        if cid is enc_done:
+                            ends += 1
+                            if not xset and payload:
+                                vs.codec_context.extradata = payload
+                                xset = True
+                            continue
+                        buf[cid] = payload
+                        drain()
+                    drain()
+                except Exception as e:             # noqa: BLE001
+                    enc_err.append(e)
+
+            stages = [_builder] + \
+                [(lambda k=k: _session(k)) for k in range(n_sess)] + [_muxer]
+        elif gpu_async:
             frame_q: "queue.Queue" = queue.Queue(maxsize=4)
 
             def _builder():
@@ -297,16 +415,29 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         # default stream is already stitching the next frame (MPS cannot -
         # one kernel queue - so it keeps the synchronous fetch).
         pool = gpu_stitch.input_pool() if use_gpu else None
+
+        def _feed(item):
+            # Bounded put that keeps checking for a dead consumer: a stage
+            # thread that died leaves its queue full forever, and a plain
+            # put() would deadlock the producer instead of surfacing the
+            # error (seen live when a builder exception killed the run).
+            while True:
+                if enc_err:
+                    raise enc_err[0]
+                try:
+                    enc_q.put(item, timeout=0.5)
+                    return
+                except queue.Full:
+                    continue
+
         for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
                                                fmt=dec_fmt, hardware=hardware,
                                                alloc=pool.alloc if pool else None),
                                     size=4):
-            enc_q.put((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
+            _feed((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
             done += 1
             if progress:
                 progress(done, n_frames)
-            if enc_err:
-                raise enc_err[0]
         enc_q.put(enc_done)
         for t in threads:
             t.join()
@@ -320,8 +451,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             if progress:
                 progress(done, n_frames)
 
-    for pkt in vs.encode():   # flush encoder
-        out.mux(pkt)
+    if not multi_enc:
+        for pkt in vs.encode():   # flush encoder (unused in multi-session)
+            out.mux(pkt)
     out.close()
     src.close()
 
