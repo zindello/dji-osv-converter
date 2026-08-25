@@ -12,6 +12,8 @@ both halves for one frame index.
 from __future__ import annotations
 
 import logging
+import queue
+import sys
 from pathlib import Path
 
 import av
@@ -52,16 +54,81 @@ def prefetch(gen, size: int = 4):
 
 
 def _hwaccel():
-    """A VideoToolbox hardware-decode context, or None if unavailable.
+    """The platform's hardware-decode context, or None if it has none.
 
-    Hardware decode is ~5x faster than software on Apple silicon and yields
-    10-bit (p010le) frames directly. Falls back silently to software.
+    VideoToolbox on macOS (~5x faster than software on Apple silicon, yields
+    10-bit p010le directly); NVDEC on Linux with an NVIDIA GPU. Falls back
+    silently to software. The probe must be platform-gated: HWAccel
+    construction succeeds even for accelerators this machine doesn't have
+    (the failure only surfaces at codec-open, as a silent software fallback),
+    and callers use ``None`` to decide software-decode threading — a bogus
+    context here means single-threaded software decode.
     """
     try:
         from av.codec.hwaccel import HWAccel
-        return HWAccel(device_type="videotoolbox", allow_software_fallback=True)
     except Exception:
         return None
+    if sys.platform == "darwin":
+        return HWAccel(device_type="videotoolbox", allow_software_fallback=True)
+    if sys.platform == "linux" and Path("/dev/nvidiactl").exists():
+        return HWAccel(device_type="cuda", allow_software_fallback=True)
+    return None
+
+
+def gpu_decode_fmt(hardware: bool = True, path=None) -> str:
+    """Cheapest 10-bit format the GPU stitch can ingest on this platform.
+
+    With a ``path`` to probe, the best NVDEC arrangement is chosen:
+    ``"cuda"`` (decode-to-device: frames stay on the GPU as torch tensors,
+    zero PCIe decode traffic) when the primary-context hwdevice works, else
+    ``"p010le"`` (hevc_cuvid to system memory, unpacked on-device). Without
+    a path, the conservative ``"p010le"`` is returned on NVIDIA Linux -
+    iter_pairs falls back internally if cuvid is unusable. Everywhere else
+    planar is already the cheap layout (VideoToolbox frames convert
+    losslessly; software decode emits planar directly).
+
+    Call this BEFORE any torch CUDA work when probing (the primary-context
+    hwdevice cannot be created once torch has initialized the context).
+    """
+    if hardware and sys.platform == "linux" and Path("/dev/nvidiactl").exists():
+        from . import nvdec
+        if path is not None and nvdec.cuda_frames_usable(path):
+            return "cuda"
+        return "p010le"
+    return "yuv420p10le"
+
+
+def _plane_u16(plane, width: int) -> np.ndarray:
+    """A (height, width) uint16 view of a frame plane, stride handled.
+
+    ``width`` is in uint16 samples: the luma width for Y, but 2x the reported
+    plane width for p010's UV plane (U and V interleave in one row).
+    """
+    ls = plane.line_size // 2
+    a = np.frombuffer(plane, np.uint16).reshape(plane.height, ls)
+    return a[:, :width]
+
+
+def _frame_p010(fr) -> tuple[np.ndarray, np.ndarray]:
+    """(Y, UV) uint16 arrays in p010 layout from a decoded frame.
+
+    The fast path returns ZERO-COPY views of the p010le planes NVDEC
+    downloaded (both planes are row-contiguous; ``np.frombuffer`` keeps the
+    frame alive through ``.base``, so the views stay valid while referenced).
+    The fallback (hwaccel silently fell back to software, so frames arrive
+    planar) shifts and interleaves on CPU - slower, but keeps the format
+    contract with the stitcher intact.
+    """
+    if fr.format.name == "p010le":
+        return (_plane_u16(fr.planes[0], fr.width),
+                _plane_u16(fr.planes[1], fr.width))
+    arr = fr.to_ndarray(format="yuv420p10le")
+    fh, fw = fr.height, fr.width
+    Y = arr[:fh] << 6
+    UV = np.empty((fh // 2, fw), np.uint16)
+    UV[:, 0::2] = arr[fh:fh + fh // 4].reshape(fh // 2, fw // 2) << 6
+    UV[:, 1::2] = arr[fh + fh // 4:].reshape(fh // 2, fw // 2) << 6
+    return Y, UV
 
 
 def _video_streams(container):
@@ -72,8 +139,77 @@ def _video_streams(container):
     return vids[:2]
 
 
+def _open_stream(path, si: int, start: int, hwaccel=None):
+    """Open one fisheye stream for streaming decode from ``start``.
+
+    Returns ``(container, stream, rate, time_base)`` — the shared preamble of
+    every decode worker.
+    """
+    c = av.open(str(path), hwaccel=hwaccel) if hwaccel else av.open(str(path))
+    s = _video_streams(c)[si]
+    rate, tb = float(s.average_rate), s.time_base
+    if start > 0:
+        c.seek(int(start / rate / tb), stream=s, backward=True, any_frame=False)
+    return c, s, rate, tb
+
+
+def _frame_index(pts, tb, rate) -> int:
+    """Frame number for a pts on this stream's timeline."""
+    return int(round(float(pts * tb) * rate))
+
+
+def _iter_pairs_threaded(path, start: int, count: int | None, worker,
+                         wargs=()):
+    """Drive one decode worker per fisheye stream, zipping their outputs.
+
+    Both NVDEC paths use this: decode (and any staging copies) run on the
+    two worker threads and overlap each other and the consumer.
+    """
+    import threading
+
+    from .constants import DECODE_WORKER_QUEUE
+
+    stop = threading.Event()
+    qa: "queue.Queue" = queue.Queue(maxsize=DECODE_WORKER_QUEUE)
+    qb: "queue.Queue" = queue.Queue(maxsize=DECODE_WORKER_QUEUE)
+    workers = [
+        threading.Thread(target=worker,
+                         args=(path, 0, start, count, qa, stop, *wargs), daemon=True),
+        threading.Thread(target=worker,
+                         args=(path, 1, start, count, qb, stop, *wargs), daemon=True),
+    ]
+    for w in workers:
+        w.start()
+
+    def next_item(q):
+        item = q.get()
+        if isinstance(item, Exception):
+            raise item
+        return item                       # None (end) or (idx, arr)
+
+    try:
+        a, b = next_item(qa), next_item(qb)
+        while a is not None and b is not None:
+            if a[0] == b[0]:
+                yield a[0], a[1], b[1]
+                a, b = next_item(qa), next_item(qb)
+            elif a[0] < b[0]:             # streams should stay lockstep; skip
+                a = next_item(qa)         # any solo frame defensively
+            else:
+                b = next_item(qb)
+    finally:
+        stop.set()
+        for q in (qa, qb):                # unblock workers stuck on a full queue
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+
+
 def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
-               bit16: bool = False, hardware: bool = True, fmt: str | None = None):
+               bit16: bool = False, hardware: bool = True, fmt: str | None = None,
+               alloc=None):
     """Yield ``(index, fisheye0, fisheye1)`` decoding both streams sequentially.
 
     Streaming decode - far faster than seeking per frame for a whole clip. Each
@@ -87,28 +223,47 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
     """
     if fmt is None:
         fmt = "rgb48le" if bit16 else "bgr24"
+    if fmt == "cuda":
+        from . import nvdec
+        if not (hardware and nvdec.cuda_frames_usable(path)):
+            raise RuntimeError("fmt='cuda' requires device-resident NVDEC "
+                               "(pick the format with gpu_decode_fmt(path))")
+        yield from _iter_pairs_threaded(path, start, count, nvdec.cuda_worker)
+        return
+    if fmt == "p010le" and hardware:
+        from . import nvdec
+        if nvdec.cuvid_usable(path):
+            yield from _iter_pairs_threaded(path, start, count,
+                                            nvdec.cuvid_worker, (alloc,))
+            return
     hw = _hwaccel() if hardware else None
     ca = av.open(str(path), hwaccel=hw) if hw else av.open(str(path))
     cb = av.open(str(path), hwaccel=hw) if hw else av.open(str(path))
     try:
         sa = _video_streams(ca)[0]
         sb = _video_streams(cb)[1]
-        if not hw:
+        if not hw or sys.platform != "darwin":
+            # Threading must also be on when a hw context exists but ends up
+            # falling back to software at codec-open (hwaccel failures are
+            # silent). Harmless under real NVDEC decode; kept off only for
+            # VideoToolbox, where the shipping M3 path never set it.
             sa.thread_type = sb.thread_type = "AUTO"
         if start > 0:
             fps = float(sa.average_rate)
             for s, c in ((sa, ca), (sb, cb)):
                 c.seek(int(start / fps / s.time_base), stream=s,
                        backward=True, any_frame=False)
+        to_arr = _frame_p010 if fmt == "p010le" else (
+            lambda fr: fr.to_ndarray(format=fmt))
         for fa, fb in zip(ca.decode(sa), cb.decode(sb)):
             if fa.pts is None or fb.pts is None:
                 continue
-            idx = int(round(float(fa.pts * sa.time_base) * float(sa.average_rate)))
+            idx = _frame_index(fa.pts, sa.time_base, float(sa.average_rate))
             if idx < start:
                 continue
             if count is not None and idx >= start + count:
                 break
-            yield idx, fa.to_ndarray(format=fmt), fb.to_ndarray(format=fmt)
+            yield idx, to_arr(fa), to_arr(fb)
     finally:
         ca.close()
         cb.close()

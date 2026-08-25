@@ -84,6 +84,33 @@
             <li>
                     <a class="variable" href="#BITRATE_BPP">BITRATE_BPP</a>
             </li>
+            <li>
+                    <a class="variable" href="#GPU_ENGINES">GPU_ENGINES</a>
+            </li>
+            <li>
+                    <a class="variable" href="#GPU_ENGINES_DEFAULT">GPU_ENGINES_DEFAULT</a>
+            </li>
+            <li>
+                    <a class="function" href="#gpu_engines">gpu_engines</a>
+            </li>
+            <li>
+                    <a class="variable" href="#ENC_CHUNK_SECONDS">ENC_CHUNK_SECONDS</a>
+            </li>
+            <li>
+                    <a class="variable" href="#PIPELINE_QUEUE_FRAMES">PIPELINE_QUEUE_FRAMES</a>
+            </li>
+            <li>
+                    <a class="variable" href="#DECODE_WORKER_QUEUE">DECODE_WORKER_QUEUE</a>
+            </li>
+            <li>
+                    <a class="variable" href="#PINNED_INPUT_SLOTS">PINNED_INPUT_SLOTS</a>
+            </li>
+            <li>
+                    <a class="variable" href="#ASYNC_D2H_SLOTS">ASYNC_D2H_SLOTS</a>
+            </li>
+            <li>
+                    <a class="variable" href="#CUVID_PROBE_PACKETS">CUVID_PROBE_PACKETS</a>
+            </li>
     </ul>
 
 
@@ -346,6 +373,121 @@ should send you here first.</p>
         
     </div>
     <a class="headerlink" href="#BITRATE_BPP"></a>
+    
+    
+
+                </section>
+                <section id="GPU_ENGINES">
+                    <div class="attr variable">
+            <span class="name">GPU_ENGINES</span>        =
+<span class="default_value">{&#39;V100&#39;: {&#39;nvenc&#39;: 3, &#39;nvdec&#39;: 1}}</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GPU_ENGINES"></a>
+    
+    
+
+                </section>
+                <section id="GPU_ENGINES_DEFAULT">
+                    <div class="attr variable">
+            <span class="name">GPU_ENGINES_DEFAULT</span>        =
+<span class="default_value">{&#39;nvenc&#39;: 1, &#39;nvdec&#39;: 1}</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GPU_ENGINES_DEFAULT"></a>
+    
+    
+
+                </section>
+                <section id="gpu_engines">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">gpu_engines</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">device_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="nb">dict</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#gpu_engines"></a>
+    
+            <div class="docstring"><p>Engine counts for a CUDA device name.</p>
+
+<p>Longest key first, and the key must not be followed by a further digit,
+so "A100-SXM4" matches A100 but "RTX A1000" does not, and "L40S" matches
+L40 rather than L4.</p>
+</div>
+
+
+                </section>
+                <section id="ENC_CHUNK_SECONDS">
+                    <div class="attr variable">
+            <span class="name">ENC_CHUNK_SECONDS</span>        =
+<span class="default_value">2.0</span>
+
+        
+    </div>
+    <a class="headerlink" href="#ENC_CHUNK_SECONDS"></a>
+    
+    
+
+                </section>
+                <section id="PIPELINE_QUEUE_FRAMES">
+                    <div class="attr variable">
+            <span class="name">PIPELINE_QUEUE_FRAMES</span>        =
+<span class="default_value">4</span>
+
+        
+    </div>
+    <a class="headerlink" href="#PIPELINE_QUEUE_FRAMES"></a>
+    
+    
+
+                </section>
+                <section id="DECODE_WORKER_QUEUE">
+                    <div class="attr variable">
+            <span class="name">DECODE_WORKER_QUEUE</span>        =
+<span class="default_value">3</span>
+
+        
+    </div>
+    <a class="headerlink" href="#DECODE_WORKER_QUEUE"></a>
+    
+    
+
+                </section>
+                <section id="PINNED_INPUT_SLOTS">
+                    <div class="attr variable">
+            <span class="name">PINNED_INPUT_SLOTS</span>        =
+<span class="default_value">16</span>
+
+        
+    </div>
+    <a class="headerlink" href="#PINNED_INPUT_SLOTS"></a>
+    
+    
+
+                </section>
+                <section id="ASYNC_D2H_SLOTS">
+                    <div class="attr variable">
+            <span class="name">ASYNC_D2H_SLOTS</span>        =
+<span class="default_value">6</span>
+
+        
+    </div>
+    <a class="headerlink" href="#ASYNC_D2H_SLOTS"></a>
+    
+    
+
+                </section>
+                <section id="CUVID_PROBE_PACKETS">
+                    <div class="attr variable">
+            <span class="name">CUVID_PROBE_PACKETS</span>        =
+<span class="default_value">64</span>
+
+        
+    </div>
+    <a class="headerlink" href="#CUVID_PROBE_PACKETS"></a>
     
     
 

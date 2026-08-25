@@ -14,7 +14,17 @@ pipelined on GPU, serial on CPU).
 |---|---|---|---|
 | Apple M3 (macOS 15) | GPU | ~7 s | **73 ms (13.6 fps)** |
 | Apple M3 (macOS 15) | CPU | 3 s | 972 ms (1.0 fps) |
-| NVIDIA V100 (Linux) | GPU | *pending* | *pending* |
+| NVIDIA V100 (CUDA 12.6, Linux) | GPU | 32 s | **54 ms (18.6 fps)** |
+| NVIDIA V100 (CUDA 12.6, Linux) | CPU | 23 s | 5334 ms (0.2 fps) |
+
+The V100 GPU row is NVDEC-bound and content-dependent: the worst-case
+benchmark clip decodes hard and encodes easily, while typical outdoor
+footage flips that — there the segment-parallel NVENC default (3 sessions,
+`enc_sessions`) delivers **36 ms/frame (28 fps, 0.79× realtime)** measured
+over the full 4724-frame base clip, with the single NVDEC engine at
+94-100% (the hardware wall). Short `--e2e` windows under-report
+multi-session throughput (the pipeline drains its session backlogs after
+the last frame); use ≥450 frames.
 
 ## Adding a row
 

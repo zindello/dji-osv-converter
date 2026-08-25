@@ -91,7 +91,6 @@ def main() -> None:
             st.stitch(f0, f1, frame=i, multiband=False)
         stitch_ms = (time.time() - t) / n * 1000
     else:
-        import torch
         dev = args.device or pick_device()
         g = GpuStitcher(maps, band_px=st.seam_overlap_ratio * W, width=W, height=H,
                         device=dev,

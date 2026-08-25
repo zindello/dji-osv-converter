@@ -46,6 +46,12 @@
                                 <a class="variable" href="#GpuStitcher.dev">dev</a>
                         </li>
                         <li>
+                                <a class="variable" href="#GpuStitcher.input_p010">input_p010</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.input_cuda">input_cuda</a>
+                        </li>
+                        <li>
                                 <a class="variable" href="#GpuStitcher.grid">grid</a>
                         </li>
                         <li>
@@ -68,6 +74,15 @@
                         </li>
                         <li>
                                 <a class="function" href="#GpuStitcher.stitch_yuv">stitch_yuv</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.async_d2h">async_d2h</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#GpuStitcher.input_pool">input_pool</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#GpuStitcher.stitch_yuv_async">stitch_yuv_async</a>
                         </li>
                 </ul>
 
@@ -156,7 +171,7 @@ device changes. Construct only when <code><a href="#available">available()</a></
                             <div id="GpuStitcher.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">GpuStitcher</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">band_px</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lsc_gain</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rs_tables</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">fisheye_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span></span>)</span>
+        <span class="name">GpuStitcher</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">band_px</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lsc_gain</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rs_tables</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">fisheye_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span>,</span><span class="param">	<span class="n">input_fmt</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'yuv420p10le'</span></span>)</span>
 
         
     </div>
@@ -172,6 +187,28 @@ device changes. Construct only when <code><a href="#available">available()</a></
         
     </div>
     <a class="headerlink" href="#GpuStitcher.dev"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.input_p010" class="classattr">
+                                <div class="attr variable">
+            <span class="name">input_p010</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.input_p010"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.input_cuda" class="classattr">
+                                <div class="attr variable">
+            <span class="name">input_cuda</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.input_cuda"></a>
     
     
 
@@ -273,6 +310,59 @@ device changes. Construct only when <code><a href="#available">available()</a></
 two lenses' colour, ~15ms/frame dearer); the default luma-only match is
 the shipping path. <code>rs</code> = (theta (S,3), t0, scale) enables per-pixel
 rolling-shutter correction (pipeline.Stitcher360.rs_args_for).</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.async_d2h" class="classattr">
+                                <div class="attr variable">
+            <span class="name">async_d2h</span><span class="annotation">: bool</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.async_d2h"></a>
+    
+            <div class="docstring"><p>True when <code><a href="#GpuStitcher.stitch_yuv_async">stitch_yuv_async</a></code> is available (CUDA + uint16 cast).</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.input_pool" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">input_pool</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">slots</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="n">dji_osv_converter</span><span class="o">.</span><span class="n">stitch_gpu</span><span class="o">.</span><span class="n">PinnedInputPool</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.input_pool"></a>
+    
+            <div class="docstring"><p>A pinned staging pool for the decoder to fill (CUDA p010 path only).</p>
+
+<p>Pass its <code>alloc</code> to <code>iter_pairs</code>; None where it wouldn't help.</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.stitch_yuv_async" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">stitch_yuv_async</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="bp">self</span>,</span><span class="param">	<span class="n">y0</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">y1</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">R</span><span class="p">:</span> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span>,</span><span class="param">	<span class="n">exposure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">wb</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">rs</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">):</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.stitch_yuv_async"></a>
+    
+            <div class="docstring"><p><code><a href="#GpuStitcher.stitch_yuv">stitch_yuv</a></code>, but the D2H copy runs on a side stream (CUDA only).</p>
+
+<p>The packed planes are copied into pinned host memory by the copy
+engine while the default stream starts the next frame's kernels —
+on MPS the single kernel queue forbids this, on CUDA it hides the
+whole fetch (~26 ms pageable at 8K on PCIe V100). Returns a handle:
+<code>planes()</code> blocks until the copy lands, <code>release()</code> returns the
+pinned slot to the pool. Backpressure comes from the slot pool —
+callers must release each handle after consuming it.</p>
 </div>
 
 
