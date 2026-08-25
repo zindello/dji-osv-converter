@@ -62,7 +62,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             bitrate: int | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = False,
             exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
-            seam_flow: bool = False,
+            seam_flow: bool | str = "auto",
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
@@ -87,11 +87,14 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     indistinguishable from multi-band on this (aligned, ISP-matched) footage and
     ~1s/frame cheaper. Turn it on for the last ounce of seam quality on stills.
 
-    ``seam_flow`` (opt-in, ~+30 ms/frame) morphs the two lenses toward each
-    other inside the blend band with gated optical flow, reconciling the
-    parallax on NEAR objects crossing the seam (the lenses sit a few cm
-    apart; a bar ~1 m away steps visibly at the seam without it). Distant
-    scenes don't need it.
+    ``seam_flow`` fixes the seam where the two lenses genuinely disagree:
+    an inter-lens photometric match (asymmetric lighting leaves a real
+    mismatch, worst in dark content), an optical-flow morph (parallax on
+    NEAR objects - the lenses sit a few cm apart; a bar ~1 m away steps
+    visibly at the seam), and a narrow dynamic seam gated to real parallax.
+    The default "auto" detects per frame what is needed and costs only the
+    detector (~16 ms) on frames that need nothing; True forces the full
+    stack every frame (~+100 ms); False disables (the static blend).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
@@ -181,7 +184,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                                          wb=exposure_wb, rs=rs,
                                          seam_flow=seam_flow)            # (Y, UV) p010
         return stitcher.stitch(f0, f1, frame=idx, exposure=exposure,
-                               multiband=multiband, flow=seam_flow)
+                               multiband=multiband, flow=bool(seam_flow))
 
     def _p010_frame(planes) -> "av.VideoFrame":
         Y, UV = planes

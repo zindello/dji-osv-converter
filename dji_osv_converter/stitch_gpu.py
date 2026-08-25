@@ -317,12 +317,18 @@ class GpuStitcher:
         self._sf = dict(t0=t0, t1=t1, t0h=t0[:, :, ::2, ::2], t1h=t1[:, :, ::2, ::2],
                         base=base, baseh=baseh, ramp=ramp)
 
-    def _seam_flow_apply(self, Ya, UVa, Yb, UVb):
+    def _seam_flow_apply(self, Ya, UVa, Yb, UVb, auto: bool = False):
         """Morph both lenses toward each other inside the blend band.
 
         The flow itself runs on the CPU (Farneback on a ~90x1920 gray pair,
         see stitcher.seam_flow_small); only tiny fields cross the bus, and the
         band resample is two small grid_samples per lens on-device.
+
+        ``auto=True`` engages each part only when its detector fires (see
+        constants.SEAM_AUTO_*): the photometric fix above SEAM_AUTO_PHOTO_T,
+        the flow morph + dynamic seam when any column's disagreement clears
+        SEAM_DYN_GATE_LO. May return ``(..., None, None)`` = use the static
+        blend weights.
         """
         import cv2
         from .stitcher import seam_flow_small
@@ -353,15 +359,22 @@ class GpuStitcher:
                                          lo=64.0, hi=940.0, n_lut=1024,
                                          sigma=SEAM_OFFSET_SIGMA,
                                          agree_t=SEAM_OFFSET_AGREE_T)
-        lut_t = torch.from_numpy(0.5 * lut).to(self.dev)
-        sp = torch.from_numpy(0.5 * spatial).to(self.dev)[None, None]
-        sp = F.interpolate(sp, size=(r1 - r0, W), mode="bilinear",
-                           align_corners=False)[0, 0]
-        ramp = sf["ramp"]                                 # (bh,1): 0 edges, 1 in band
-        for plane, sgn in ((Ya, 1.0), (Yb, -1.0)):
-            band = plane[:, :, r0:r1]
-            corr = lut_t[band.clamp(0, 1023).long()] + sp
-            plane[:, :, r0:r1] = band + sgn * corr * ramp
+        from .constants import SEAM_AUTO_PHOTO_T, SEAM_DYN_GATE_LO
+        need_photo = (not auto) or (np.abs(lut).max() > SEAM_AUTO_PHOTO_T
+                                    or np.abs(spatial).max() > SEAM_AUTO_PHOTO_T)
+        if not need_photo:
+            lut = np.zeros_like(lut)
+            spatial = np.zeros_like(spatial)
+        else:
+            lut_t = torch.from_numpy(0.5 * lut).to(self.dev)
+            sp = torch.from_numpy(0.5 * spatial).to(self.dev)[None, None]
+            sp = F.interpolate(sp, size=(r1 - r0, W), mode="bilinear",
+                               align_corners=False)[0, 0]
+            ramp = sf["ramp"]                             # (bh,1): 0 edges, 1 in band
+            for plane, sgn in ((Ya, 1.0), (Yb, -1.0)):
+                band = plane[:, :, r0:r1]
+                corr = lut_t[band.clamp(0, 1023).long()] + sp
+                plane[:, :, r0:r1] = band + sgn * corr * ramp
 
         # Flow grays on the CPU from the same pooled data, correction applied
         # (10-bit centred Y -> 8-bit gray for Farneback; the small pool-order
@@ -370,6 +383,14 @@ class GpuStitcher:
         k = max(int(round(1.0 / SEAM_FLOW_SCALE)), 1)
         cA = an + 0.5 * (lut[np.clip(an.astype(np.int64), 0, 1023)] + spatial)
         cB = bn - 0.5 * (lut[np.clip(bn.astype(np.int64), 0, 1023)] + spatial)
+        if auto:
+            # Parallax detector: engage flow + dynamic seam only when some
+            # column's mean disagreement clears the gate's own threshold -
+            # below it the gate would zero the dynamic seam anyway.
+            d = np.abs(cB - cA) * self._sf_inner4
+            col = d.sum(0) / np.maximum(self._sf_inner4.sum(0), 1)
+            if col.max() * 0.25 < SEAM_DYN_GATE_LO:      # 10-bit -> 8-bit
+                return Ya, UVa, Yb, UVb, None, None
         bh4 = (cA.shape[0] // k) * k
         pr = lambda x: x[:bh4].reshape(bh4 // k, k, x.shape[1]).mean(1)
         ga = np.clip(pr(cA) * 0.25, 0, 255).astype(np.uint8)
@@ -533,9 +554,11 @@ class GpuStitcher:
         two lenses' colour, ~15ms/frame dearer); the default luma-only match is
         the shipping path. ``rs`` = (theta (S,3), t0, scale) enables per-pixel
         rolling-shutter correction (pipeline.Stitcher360.rs_args_for).
-        ``seam_flow=True`` morphs the two lenses toward each other inside the
-        blend band (optical flow), reconciling parallax on near objects that
-        cross the seam (~+30 ms/frame, CPU Farneback).
+        ``seam_flow``: True runs the full seam stack every frame (photometric
+        match + flow morph + gated dynamic seam); "auto" runs a cheap
+        per-frame detector and engages each part only when needed (the
+        recommended default - see constants.SEAM_AUTO_*); False = static
+        blend only.
         """
         if rs is not None and self.rs_tau is not None:
             th = torch.from_numpy(np.ascontiguousarray(rs[0])).to(self.dev)
@@ -546,8 +569,9 @@ class GpuStitcher:
         Yb, UVb = self._warp_planes(y1, 1, rs)
         sfw = None
         if seam_flow:
-            Ya, UVa, Yb, UVb, wd, wdh = self._seam_flow_apply(Ya, UVa, Yb, UVb)
-            sfw = (wd, wdh)
+            Ya, UVa, Yb, UVb, wd, wdh = self._seam_flow_apply(
+                Ya, UVa, Yb, UVb, auto=(seam_flow == "auto"))
+            sfw = (wd, wdh) if wd is not None else None
         if exposure:
             expose = self._expose_wb if wb else self._expose_luma
             Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)

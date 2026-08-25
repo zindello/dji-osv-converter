@@ -273,9 +273,11 @@ device changes. Construct only when <code><a href="#available">available()</a></
 two lenses' colour, ~15ms/frame dearer); the default luma-only match is
 the shipping path. <code>rs</code> = (theta (S,3), t0, scale) enables per-pixel
 rolling-shutter correction (pipeline.Stitcher360.rs_args_for).
-<code>seam_flow=True</code> morphs the two lenses toward each other inside the
-blend band (optical flow), reconciling parallax on near objects that
-cross the seam (~+30 ms/frame, CPU Farneback).</p>
+<code>seam_flow</code>: True runs the full seam stack every frame (photometric
+match + flow morph + gated dynamic seam); "auto" runs a cheap
+per-frame detector and engages each part only when needed (the
+recommended default - see constants.SEAM_AUTO_*); False = static
+blend only.</p>
 </div>
 
 

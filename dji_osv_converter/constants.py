@@ -115,7 +115,12 @@ FEATHER_FRACTION = 1.0 / 3.0
 SEAM_FLOW_SCALE = 0.25        # flow computed at this fraction of full res
                               # (0.5 measured visually identical, 2-3x dearer)
 SEAM_FLOW_MARGIN_PX = 96      # context rows kept around the blend band
-SEAM_FLOW_SIGMA_ALONG = 18.0  # flow smoothing along the seam (small-res px)
+SEAM_FLOW_SIGMA_ALONG = 6.0   # flow smoothing along the seam (small-res px).
+                              # 18 over-smoothed: it diluted a crossing
+                              # object's parallax vector with background flow
+                              # and left a kink at the seam crossing; 6 (24 px
+                              # full-res) aligns the crossing and measured
+                              # equal to half-res flow at 1/4 the cost.
 SEAM_FLOW_SIGMA_ACROSS = 2.5  # flow smoothing across the seam
 SEAM_FLOW_MAX_SHIFT_PX = 60.0 # clamp on the per-pixel morph (full-res px)
 
@@ -155,6 +160,15 @@ SEAM_DYN_GATE_SIGMA = 30.0    # gate smoothing along the seam (path-grid cols)
 # derived in code.
 SEAM_OFFSET_AGREE_T = 32.0    # 10-bit |A-B| below this = "agreeing" pixel
 SEAM_OFFSET_SIGMA = 30.0      # residual smoothing along the seam (path cols)
+
+# seam_flow="auto" (the default): the detector runs every frame (one pooled
+# download + the ~15 ms estimator) and engages each part only when needed -
+# the photometric correction when the estimated mismatch exceeds
+# SEAM_AUTO_PHOTO_T (it is continuous, so engagement cannot pop), and the
+# flow morph + dynamic seam when any column's mean disagreement exceeds
+# SEAM_DYN_GATE_LO (the gate already ramps from that same threshold, so
+# engagement is seamless by construction).
+SEAM_AUTO_PHOTO_T = 3.0       # 10-bit: apply photometric fix above this
 
 
 # ---- Stabilisation ----------------------------------------------------------
@@ -199,7 +213,7 @@ __all__ = [
     "SEAM_FLOW_SIGMA_ACROSS", "SEAM_FLOW_MAX_SHIFT_PX",
     "SEAM_DYN_FEATHER_PX", "SEAM_DYN_COLS", "SEAM_DYN_SIGMA",
     "SEAM_DYN_GATE_LO", "SEAM_DYN_GATE_HI", "SEAM_DYN_GATE_SIGMA",
-    "SEAM_OFFSET_AGREE_T", "SEAM_OFFSET_SIGMA",
+    "SEAM_OFFSET_AGREE_T", "SEAM_OFFSET_SIGMA", "SEAM_AUTO_PHOTO_T",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
 ]
