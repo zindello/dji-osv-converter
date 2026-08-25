@@ -89,6 +89,14 @@ Notable implementation facts:
   queue), CPU stage overlap (912 → 1078 ms) and CPU frame-parallel stitch
   threads (0.79× at 2) — numpy/OpenCV already saturate the cores, so the
   CPU path stays serial.
+- The GPU is **saturated**, not idle: two frames' kernels cost exactly 2.01×
+  one frame's (81.6 vs 40.5 ms) — a single 8K frame fills the M3 GPU, so
+  batching/multi-frame-in-flight has nothing to harvest. The ~60 ms stitch
+  is 40.5 compute + 6 upload + 7 D2H + ~5 launch overhead; on MPS the
+  transfers share the one kernel queue and cannot overlap compute. Going
+  faster on this hardware means less work per frame, not more parallelism.
+  On CUDA the copy engines CAN overlap (pinned memory + `non_blocking` on
+  side streams) — an open V100-phase item worth ~13 ms.
 - One-time setup is ~6.5 s: ~3.5 s map build + ~3 s `torch.compile`. The
   radial polynomial is Horner-evaluated (bit-identical maps, 2.4× faster than
   the naive `theta**n` form). Threading the two lens builds was **measured as

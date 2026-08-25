@@ -45,3 +45,7 @@ level sample 8.2+2.4 | pack+D2H ~10 → stitch ~60 ms; e2e ~73 ms pipelined
 - CPU-path concurrency, every variant: stage overlap 912 → 1078 ms,
   frame-parallel stitch threads 0.79× at 2 workers. numpy/OpenCV already
   saturate the cores; the CPU path stays serial.
+- Frame batching / multi-frame-in-flight on the GPU: the M3 GPU is already
+  saturated by one 8K frame (two frames' kernels scale at exactly 2.01×) —
+  there is no idle GPU to harvest. Open on CUDA only: overlapping the
+  ~13 ms of H2D/D2H with compute via pinned memory + side streams.
