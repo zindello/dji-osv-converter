@@ -741,6 +741,21 @@ class GpuStitcher:
                         band_scale=float(H) / max(bh - 1, 1),
                         band_shift=-(2.0 * r0 / max(bh - 1, 1)) - 1.0)
 
+        # lens px (1,2,h,w) -> normalised sampling grid (1,h,w,2): three
+        # eager elementwise kernels over an 8K tensor on MPS cost more than
+        # the gather they feed; fuse them when inductor is available.
+        def _uv_to_grid(uv, sx, sy, oy):
+            return torch.stack([uv[:, 0] * sx - 1.0, (uv[:, 1] - oy) * sy - 1.0], -1)
+
+        self._sp["to_grid"] = _uv_to_grid
+        if self._compile:
+            try:
+                fn = torch.compile(_uv_to_grid, dynamic=True)
+                fn(uv_pad[0][:, :, :8, :8].contiguous(), 1.0, 1.0, 0.0)
+                self._sp["to_grid"] = fn
+            except Exception:
+                pass
+
     def _sp_band_grid(self, g):
         """Level grid (1,h,w,2) -> grid over a (bh, W+1) band field, zero outside."""
         sp = self._sp
@@ -755,17 +770,16 @@ class GpuStitcher:
         """Sample lens ``i`` once at rig grids g (full) / gh (half-res chroma)."""
         sp = self._sp
         fw, fh = float(self.fw), float(self.fh)
+        to_grid = sp["to_grid"]
         uv = F.grid_sample(sp["uv"][i], g, mode="bilinear", align_corners=True,
                            padding_mode="border")                   # (1,2,H,W) lens px
-        gl = torch.stack([uv[:, 0] * (2.0 / (fw - 1)) - 1.0,
-                          uv[:, 1] * (2.0 / (fh - 1)) - 1.0], -1)
+        gl = to_grid(uv, 2.0 / (fw - 1), 2.0 / (fh - 1), 0.0)
         Ys = self._sample_luma(Y, gl)
         uvh = F.grid_sample(sp["uv"][i], gh, mode="bilinear", align_corners=True,
                             padding_mode="border")
         # 4:2:0 chroma, MPEG-2 "left" siting: chroma sample (i, j) sits at
         # luma (2i, 2j + 0.5), so luma px (u, v) -> chroma px (u/2, (v-0.5)/2).
-        glh = torch.stack([uvh[:, 0] * (1.0 / (fw / 2 - 1)) - 1.0,
-                           (uvh[:, 1] - 0.5) * (1.0 / (fh / 2 - 1)) - 1.0], -1)
+        glh = to_grid(uvh, 1.0 / (fw / 2 - 1), 1.0 / (fh / 2 - 1), 0.5)
         UVs = F.grid_sample(UV, glh, mode="bilinear", align_corners=True,
                             padding_mode="zeros")
         if sp["lsc"] is not None:
