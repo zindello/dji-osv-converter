@@ -850,7 +850,15 @@ class GpuStitcher:
         return out
 
     def _stitch_single_pass(self, y0, y1, R: np.ndarray, seam_flow=False):
-        """One interpolation per lens per output pixel (see the notes above)."""
+        """One interpolation per lens per output pixel (see the notes above).
+
+        The seam fields are applied SPARSELY: only output pixels whose rig
+        coordinate falls inside the band (13-30% of the sphere, a ring)
+        gather the flow/photometric/dynamic-weight fields, via point grids
+        and index_put. Dense application cost ~8 full-frame gathers (+290
+        ms on an M3 whose GPU one 8K frame already saturates); sparse is a
+        nonzero() plus work proportional to the band.
+        """
         if self._sp is None:
             self._sp_init()
         Y0, U0, V0 = self._split_yuv(y0)
@@ -860,29 +868,41 @@ class GpuStitcher:
         fields = None
         if seam_flow:
             fields = self._sp_seam_fields(Y0, UV0, Y1, UV1, auto=(seam_flow == "auto"))
-        zs = lambda t, grid: F.grid_sample(t, grid, mode="bilinear",
-                                           align_corners=True, padding_mode="zeros")
-        gb = self._sp_band_grid(gf) if fields is not None else None
         H, W = self.H, self.W
+        band = None
+        if fields is not None:
+            gb = self._sp_band_grid(gf)                              # (1,H,W,2)
+            inb = gb[0, :, :, 1].abs() <= 1.0
+            ys, xs = inb.nonzero(as_tuple=True)
+            if ys.numel():
+                pts = gb[0][ys, xs].view(1, 1, -1, 2)                # (1,1,N,2)
+                at = lambda t: F.grid_sample(t, pts, mode="bilinear", align_corners=True,
+                                             padding_mode="zeros")[0, :, 0]   # (C,N)
+                band = (ys, xs, at)
         planes = []
         for i, (Y, UV) in enumerate(((Y0, UV0), (Y1, UV1))):
             g = gf
-            if fields is not None and fields["flow"] is not None:
-                off = zs(fields["flow"][i], gb)                      # (1,2,H,W) rig px
-                g = gf + torch.stack([off[:, 0] * (2.0 / W), off[:, 1] * (2.0 / H)], -1)
+            if band is not None and fields["flow"] is not None:
+                ys, xs, at = band
+                off = at(fields["flow"][i])                          # (2,N) rig px
+                g = gf.clone()
+                g[0, ys, xs, 0] += off[0] * (2.0 / W)
+                g[0, ys, xs, 1] += off[1] * (2.0 / H)
             gh = g[:, ::2, ::2, :].contiguous()
             planes.append(self._sp_sample_lens(Y, UV, i, g, gh))
         (Ya, UVa), (Yb, UVb) = planes
-        if fields is not None and fields["photo"] is not None:
+        if band is not None and fields["photo"] is not None:
+            ys, xs, at = band
             lut_t, sp_f, ramp_f = fields["photo"]
-            spf = zs(sp_f, gb)
-            rmp = zs(ramp_f, gb)
-            Ya = Ya + (lut_t[Ya.clamp(0, 1023).long()] * rmp + spf)
-            Yb = Yb - (lut_t[Yb.clamp(0, 1023).long()] * rmp + spf)
+            spf, rmp = at(sp_f)[0], at(ramp_f)[0]                    # (N,)
+            ya, yb = Ya[0, 0, ys, xs], Yb[0, 0, ys, xs]
+            Ya[0, 0, ys, xs] = ya + (lut_t[ya.clamp(0, 1023).long()] * rmp + spf)
+            Yb[0, 0, ys, xs] = yb - (lut_t[yb.clamp(0, 1023).long()] * rmp + spf)
         w = F.grid_sample(self._sp["w"], gf, mode="bilinear", align_corners=True,
                           padding_mode="border")
-        if fields is not None and fields["wd"] is not None:
-            w = w + zs(fields["wd"], gb)
+        if band is not None and fields["wd"] is not None:
+            ys, xs, at = band
+            w[0, 0, ys, xs] += at(fields["wd"])[0]
         Y = torch.lerp(Yb, Ya, w)
         UV = torch.lerp(UVb, UVa, F.avg_pool2d(w, 2))      # as the two-pass w3h
         return Y, UV
