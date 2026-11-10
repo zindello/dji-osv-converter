@@ -560,7 +560,8 @@ class GpuStitcher:
         # queue - measured +100 ms on the whole stitch).
         an4 = F.avg_pool2d(Ya[:, :, r0:r1], (1, 4))
         bn4 = F.avg_pool2d(Yb[:, :, r0:r1], (1, 4))
-        est = self._seam_estimate(an4, bn4, auto)
+        est = self._seam_estimate(an4, bn4, auto, pre=self._band_mismatch(Ya[:, :, r0:r1],
+                                                                          Yb[:, :, r0:r1]))
         if est["photo"] is not None:
             lut_t, sp = est["photo"]
             sp = F.interpolate(sp, size=(r1 - r0, W), mode="bilinear",
@@ -621,7 +622,13 @@ class GpuStitcher:
         wd = wd[None, None]
         return Ya, UVa, Yb, UVb, wd, F.avg_pool2d(wd, 2)
 
-    def _seam_estimate(self, an4, bn4, auto: bool) -> dict:
+    def _band_mismatch(self, Ya_band, Yb_band) -> float:
+        """Mean |A-B| (10-bit) over the inner blend band, abs-then-pooled (1,4)."""
+        d4 = F.avg_pool2d((Ya_band - Yb_band).abs(), (1, 4))[0, 0]
+        inner = torch.from_numpy(self._sf_inner4).to(d4.device)
+        return float(d4[inner].mean()) if bool(inner.any()) else 0.0
+
+    def _seam_estimate(self, an4, bn4, auto: bool, pre: float = 0.0) -> dict:
         """CPU side of the seam stack from the two lenses' pooled band crops.
 
         ``an4``/``bn4`` are (1,1,bh,W/4) device tensors (the blend band of
@@ -638,9 +645,9 @@ class GpuStitcher:
                                 SEAM_OFFSET_AGREE_T, SEAM_OFFSET_SIGMA)
         ab = torch.cat([an4, bn4], 0).cpu().numpy()
         an, bn = ab[0, 0], ab[1, 0]
-        inner = self._sf_inner4
-        self.seam_stats = {"pre": float(np.abs(an - bn)[inner].mean()) if inner.any() else 0.0,
-                           "photo": False, "flow": False, "post": None}
+        # ``pre``: mean |A-B| over the inner band BEFORE the stack, pooled
+        # the same way as ``post`` (abs then pool) so the two compare.
+        self.seam_stats = {"pre": float(pre), "photo": False, "flow": False, "post": None}
         lut, spatial = seam_luma_offsets(an, bn, self._sf_inner4,
                                          lo=self.y_lo, hi=self.y_hi, n_lut=1024,
                                          sigma=SEAM_OFFSET_SIGMA,
@@ -810,7 +817,8 @@ class GpuStitcher:
         # band-only rig warps (bilinear: the detectors were tuned on it)
         Ya = gs(Y0, self.grid[0][:, r0:r1])
         Yb = gs(Y1, self.grid[1][:, r0:r1])
-        est = self._seam_estimate(F.avg_pool2d(Ya, (1, 4)), F.avg_pool2d(Yb, (1, 4)), auto)
+        est = self._seam_estimate(F.avg_pool2d(Ya, (1, 4)), F.avg_pool2d(Yb, (1, 4)), auto,
+                                  pre=self._band_mismatch(Ya, Yb))
         out = {"flow": None, "photo": None, "wd": None}
         ramp = sf["ramp"]                                            # (bh,1)
         if est["photo"] is not None:
