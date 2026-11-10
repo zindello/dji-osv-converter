@@ -189,6 +189,16 @@ def main() -> int:
     ap.add_argument("--width", type=int, default=3840)
     ap.add_argument("--outdir", default="output/validation")
     ap.add_argument("--flow", action="store_true", help="enable flow seam blending")
+    ap.add_argument("--gpu", action="store_true",
+                    help="render through GpuStitcher (the shipping path) instead of the "
+                         "numpy reference; the options below apply to it")
+    ap.add_argument("--device", default=None, help="torch device for --gpu (default: best)")
+    ap.add_argument("--single-pass", dest="single_pass", action="store_true")
+    ap.add_argument("--lens-interp", dest="lens_interp", default="bilinear",
+                    choices=("bilinear", "bicubic", "catmull"))
+    ap.add_argument("--seam-flow", dest="seam_flow", default="auto", choices=("auto", "on", "off"))
+    ap.add_argument("--levelling", default="plain",
+                    help="levelling mode; pair it with the matching DJI export")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -196,17 +206,39 @@ def main() -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     W, H = args.width, args.width // 2
-    st = Stitcher360.from_file(args.osv, width=W, height=H,
+    st = Stitcher360.from_file(args.osv, width=W, height=H, levelling=args.levelling,
                                max_frames=max(args.frames) + 30)
+    gpu = None
+    if args.gpu:
+        # The GPU stitch works at the full 8K and is downscaled to the
+        # comparison width, exactly as the shipping output would be judged.
+        from dji_osv_converter import GpuStitcher, iter_pairs
+        from dji_osv_converter.stitch_gpu import p010_to_bgr
+        GW, GH = 7680, 3840
+        stg = Stitcher360.from_file(args.osv, width=GW, height=GH, levelling=args.levelling,
+                                    max_frames=max(args.frames) + 30)
+        maps, _ = stg.maps_for()
+        gpu = GpuStitcher(maps, band_px=stg.seam_overlap_ratio * GW, width=GW, height=GH,
+                          device=args.device,
+                          fisheye_size=(stg.calibs[0].width, stg.calibs[0].height),
+                          single_pass=args.single_pass, lens_interp=args.lens_interp)
+        seam = {"auto": "auto", "on": True, "off": False}[args.seam_flow]
+        print(f"GPU render: {gpu.dev}, single_pass={args.single_pass}, "
+              f"lens_interp={args.lens_interp}, seam_flow={args.seam_flow}")
 
     print(f"\n{'frame':>6} {'NCC':>7} {'SSIM':>7} {'edgeNCC':>8} {'PSNR':>7} {'MAE':>6} "
           f"{'<=8':>7} {'<=16':>7} {'<=32':>7}")
     print("-" * 62)
     rows = []
     for n in args.frames:
-        f0 = extract_frame(Path(args.osv), n, 0)
-        f1 = extract_frame(Path(args.osv), n, 1)
-        ours = st.stitch(f0, f1, frame=n, flow=args.flow)
+        if gpu is not None:
+            _, p0, p1 = next(iter(iter_pairs(args.osv, start=n, count=1, fmt="yuv420p10le")))
+            Y, UV = gpu.stitch_yuv(p0, p1, stg.levelling_for(n), seam_flow=seam)
+            ours = cv2.resize(p010_to_bgr(Y, UV), (W, H), interpolation=cv2.INTER_AREA)
+        else:
+            f0 = extract_frame(Path(args.osv), n, 0)
+            f1 = extract_frame(Path(args.osv), n, 1)
+            ours = st.stitch(f0, f1, frame=n, flow=args.flow)
         ref = cv2.resize(extract_frame(Path(args.reference), n), (W, H),
                          interpolation=cv2.INTER_AREA)
 

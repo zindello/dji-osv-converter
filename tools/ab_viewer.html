@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<title>dji_osv_converter A/B — stitch improvements</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#14161a; --fg:#e6e6e6; --mut:#9aa0a6; --acc:#5aa9ff; --pane:#1e2126; --line:#2c3038; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+  body { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr 330px; height:100vh; }
+  header { grid-column:1/3; display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center;
+    padding:8px 12px; background:var(--pane); border-bottom:1px solid var(--line); }
+  header label { color:var(--mut); display:flex; gap:6px; align-items:center; }
+  select, button { background:#0f1114; color:var(--fg); border:1px solid var(--line); border-radius:4px;
+    padding:4px 6px; font:inherit; }
+  button.on { border-color:var(--acc); color:var(--acc); }
+  #stage { position:relative; overflow:hidden; background:#000; cursor:grab; }
+  #stage.grabbing { cursor:grabbing; }
+  #world { position:absolute; left:0; top:0; transform-origin:0 0; }
+  #world img, #world canvas { position:absolute; left:0; top:0; display:block; image-rendering:auto; }
+  #world.pixel img { image-rendering:pixelated; }
+  #clipB { clip-path: inset(0 0 0 50%); }
+  #handle { position:absolute; top:0; bottom:0; width:2px; background:var(--acc); pointer-events:none; }
+  #handle::after { content:"◀ ▶"; position:absolute; top:50%; left:-22px; transform:translateY(-50%);
+    background:var(--acc); color:#000; font-size:10px; padding:2px 4px; border-radius:3px; }
+  .tag { position:absolute; top:8px; padding:3px 8px; background:rgba(0,0,0,.65); border-radius:4px;
+    font-size:12px; pointer-events:none; }
+  #tagA { left:8px; } #tagB { right:8px; }
+  aside { background:var(--pane); border-left:1px solid var(--line); overflow:auto; padding:10px 12px; }
+  aside h2 { font-size:13px; margin:12px 0 6px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  table { border-collapse:collapse; width:100%; }
+  td, th { padding:3px 4px; border-bottom:1px solid var(--line); text-align:right; font-variant-numeric:tabular-nums; }
+  td:first-child, th:first-child { text-align:left; color:var(--mut); }
+  th { color:var(--mut); font-weight:normal; }
+  .better { color:#7ee787; } .worse { color:#ff8c8c; }
+  #why { color:var(--mut); font-size:12px; }
+  #msg { position:absolute; left:8px; bottom:8px; color:var(--mut); font-size:12px;
+    background:rgba(0,0,0,.6); padding:4px 8px; border-radius:4px; }
+  kbd { background:#0f1114; border:1px solid var(--line); border-radius:3px; padding:0 4px; font-size:11px; }
+  #side { display:none; position:absolute; inset:0; }
+  #side .half { position:absolute; top:0; bottom:0; width:50%; overflow:hidden; }
+  #side .half:last-child { left:50%; border-left:1px solid var(--acc); }
+  #side .half img { position:absolute; left:0; top:0; transform-origin:0 0; }
+</style>
+</head>
+<body>
+<header>
+  <label>Window <select id="win"></select></label>
+  <label>Region <select id="region"></select></label>
+  <label>Left (A) <select id="varA"></select></label>
+  <label>Right (B) <select id="varB"></select></label>
+  <label>Mode
+    <button id="mWipe" class="on">wipe</button>
+    <button id="mSide">side by side</button>
+    <button id="mDiff">diff |A−B|</button>
+  </label>
+  <label>Zoom
+    <button id="zFit">fit</button>
+    <button id="z1">1:1</button>
+    <button id="z2">2×</button>
+    <button id="z4">4×</button>
+  </label>
+  <button id="swap" title="swap A and B (key: f)">swap</button>
+  <span style="color:var(--mut)">drag to pan · wheel to zoom · <kbd>←</kbd>/<kbd>→</kbd> variant B · <kbd>f</kbd> swap · <kbd>1</kbd>–<kbd>3</kbd> mode</span>
+</header>
+
+<div id="stage">
+  <div id="world">
+    <img id="imgA" draggable="false">
+    <img id="imgB" draggable="false">
+    <canvas id="diff"></canvas>
+  </div>
+  <div id="handle"></div>
+  <div id="side"><div class="half"><img id="sideA" draggable="false"></div><div class="half"><img id="sideB" draggable="false"></div></div>
+  <div id="tagA" class="tag"></div>
+  <div id="tagB" class="tag"></div>
+  <div id="msg"></div>
+</div>
+
+<aside>
+  <h2>Window</h2>
+  <div id="why"></div>
+  <h2>Variants</h2>
+  <table id="vdesc"></table>
+  <h2>Metrics (this window)</h2>
+  <table id="metrics"></table>
+  <h2>Sharpness by region (Laplacian variance)</h2>
+  <table id="sharp"></table>
+  <h2>Timing (one stitcher resident)</h2>
+  <table id="timing"></table>
+  <h2>Notes</h2>
+  <div id="notes" style="color:var(--mut);font-size:12px"></div>
+</aside>
+
+<script>
+const DATA = /*__DATA__*/null;
+if (!DATA) document.body.innerHTML = "<p style='padding:20px'>No data: run tools/ab_compare.py to generate this page.</p>";
+
+const $ = id => document.getElementById(id);
+const state = { win: DATA.windows[0].name, region: "full", A: "baseline",
+  B: Object.keys(DATA.variants).find(v => v !== "baseline") || "baseline",
+  mode: "wipe", zoom: null, px: 0, py: 0, wipe: 0.5, diffSupported: null };
+
+function fill(sel, items, val) {
+  sel.innerHTML = "";
+  for (const [v, label] of items) { const o = document.createElement("option"); o.value = v; o.textContent = label; sel.appendChild(o); }
+  sel.value = val;
+}
+const variantsFor = w => Object.keys(DATA.images[w]);
+function setupControls() {
+  fill($("win"), DATA.windows.map(w => [w.name, `${w.name} — ${w.role}`]), state.win);
+  fill($("region"), [["full", "full frame (downscaled)"], ...Object.keys(DATA.regions).map(r => [r, r + " (1:1 crop)"])], state.region);
+  refreshVariantSelects();
+  $("win").onchange = e => { state.win = e.target.value; refreshVariantSelects(); load(); };
+  $("region").onchange = e => { state.region = e.target.value; state.zoom = null; load(); };
+  $("varA").onchange = e => { state.A = e.target.value; load(); };
+  $("varB").onchange = e => { state.B = e.target.value; load(); };
+  $("mWipe").onclick = () => setMode("wipe"); $("mSide").onclick = () => setMode("side"); $("mDiff").onclick = () => setMode("diff");
+  $("zFit").onclick = () => { state.zoom = null; layout(); };
+  $("z1").onclick = () => setZoom(1); $("z2").onclick = () => setZoom(2); $("z4").onclick = () => setZoom(4);
+  $("swap").onclick = swap;
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "SELECT") return;
+    const vs = variantsFor(state.win); const i = vs.indexOf(state.B);
+    if (e.key === "ArrowRight") { state.B = vs[(i + 1) % vs.length]; $("varB").value = state.B; load(); }
+    if (e.key === "ArrowLeft") { state.B = vs[(i - 1 + vs.length) % vs.length]; $("varB").value = state.B; load(); }
+    if (e.key === "f") swap();
+    if (e.key === "1") setMode("wipe"); if (e.key === "2") setMode("side"); if (e.key === "3") setMode("diff");
+  });
+}
+function refreshVariantSelects() {
+  const vs = variantsFor(state.win);
+  if (!vs.includes(state.A)) state.A = "baseline";
+  if (!vs.includes(state.B)) state.B = vs.find(v => v !== state.A) || vs[0];
+  fill($("varA"), vs.map(v => [v, v]), state.A);
+  fill($("varB"), vs.map(v => [v, v]), state.B);
+}
+function swap() { [state.A, state.B] = [state.B, state.A]; $("varA").value = state.A; $("varB").value = state.B; load(); }
+function setMode(m) {
+  state.mode = m;
+  for (const [id, mm] of [["mWipe", "wipe"], ["mSide", "side"], ["mDiff", "diff"]]) $(id).classList.toggle("on", mm === m);
+  load();
+}
+function setZoom(z) {
+  const st = $("stage"); const w = natural().w, h = natural().h;
+  // keep the centre
+  const cx = (st.clientWidth / 2 - state.px) / curZoom(), cy = (st.clientHeight / 2 - state.py) / curZoom();
+  state.zoom = z;
+  state.px = st.clientWidth / 2 - cx * z; state.py = st.clientHeight / 2 - cy * z;
+  layout();
+}
+function natural() {
+  const a = $("imgA");
+  return { w: a.naturalWidth || 1, h: a.naturalHeight || 1 };
+}
+function curZoom() {
+  if (state.zoom) return state.zoom;
+  const st = $("stage"); const n = natural();
+  return Math.min(st.clientWidth / n.w, st.clientHeight / n.h);
+}
+function layout() {
+  const z = curZoom(); const n = natural(); const st = $("stage");
+  if (!state.zoom) { state.px = (st.clientWidth - n.w * z) / 2; state.py = (st.clientHeight - n.h * z) / 2; }
+  $("world").style.transform = `translate(${state.px}px, ${state.py}px) scale(${z})`;
+  $("world").classList.toggle("pixel", z >= 2);
+  $("handle").style.left = (state.px + n.w * z * state.wipe) + "px";
+  $("handle").style.display = state.mode === "wipe" ? "block" : "none";
+  $("clipB") && null;
+  $("imgB").style.clipPath = state.mode === "wipe" ? `inset(0 0 0 ${state.wipe * 100}%)` : "none";
+  $("imgB").style.display = state.mode === "wipe" ? "block" : "none";
+  $("imgA").style.display = state.mode === "diff" ? "none" : "block";
+  $("diff").style.display = state.mode === "diff" ? "block" : "none";
+  $("side").style.display = state.mode === "side" ? "block" : "none";
+  $("world").style.display = state.mode === "side" ? "none" : "block";
+  if (state.mode === "side") {
+    const half = st.clientWidth / 2; const zs = state.zoom || Math.min(half / n.w, st.clientHeight / n.h);
+    const px = state.zoom ? state.px : (half - n.w * zs) / 2, py = state.zoom ? state.py : (st.clientHeight - n.h * zs) / 2;
+    for (const id of ["sideA", "sideB"]) $(id).style.transform = `translate(${px}px, ${py}px) scale(${zs})`;
+  }
+  $("tagA").textContent = state.mode === "diff" ? `|${state.A} − ${state.B}| ×${DATA.diff_gain}` : "A: " + state.A;
+  $("tagB").textContent = state.mode === "diff" ? "" : "B: " + state.B;
+}
+function src(v, region) { return DATA.images[state.win][v] && DATA.images[state.win][v][region]; }
+function load() {
+  const a = src(state.A, state.region), b = src(state.B, state.region);
+  const imgA = $("imgA"), imgB = $("imgB");
+  imgA.onload = () => { layout(); if (state.mode === "diff") renderDiff(); };
+  imgA.src = a; imgB.src = b; $("sideA").src = a; $("sideB").src = b;
+  $("msg").textContent = "";
+  renderPanel();
+  layout();
+}
+function renderDiff() {
+  // Live |A-B| needs canvas readback, which browsers refuse for file:// images
+  // (tainted canvas). Fall back to the pre-rendered diff against the baseline.
+  const c = $("diff"), A = $("imgA"), B = $("imgB");
+  const n = natural(); c.width = n.w; c.height = n.h;
+  const ctx = c.getContext("2d");
+  const tryLive = () => {
+    const ca = document.createElement("canvas"), cb = document.createElement("canvas");
+    ca.width = cb.width = n.w; ca.height = cb.height = n.h;
+    ca.getContext("2d").drawImage(A, 0, 0); cb.getContext("2d").drawImage(B, 0, 0);
+    const da = ca.getContext("2d").getImageData(0, 0, n.w, n.h), db = cb.getContext("2d").getImageData(0, 0, n.w, n.h);
+    const out = ctx.createImageData(n.w, n.h), g = DATA.diff_gain;
+    for (let i = 0; i < da.data.length; i += 4) {
+      const la = 0.299 * da.data[i] + 0.587 * da.data[i + 1] + 0.114 * da.data[i + 2];
+      const lb = 0.299 * db.data[i] + 0.587 * db.data[i + 1] + 0.114 * db.data[i + 2];
+      const d = Math.min(255, Math.abs(la - lb) * g);
+      out.data[i] = d; out.data[i + 1] = d * 0.55; out.data[i + 2] = 255 - d; out.data[i + 3] = 255;
+    }
+    ctx.putImageData(out, 0, 0);
+  };
+  const whenReady = () => {
+    if (!(A.complete && B.complete)) { setTimeout(whenReady, 50); return; }
+    try { tryLive(); state.diffSupported = true; $("msg").textContent = "live |A−B| (luma, ×" + DATA.diff_gain + ")"; }
+    catch (e) {
+      state.diffSupported = false;
+      const other = state.A === "baseline" ? state.B : state.A;
+      const pre = DATA.diffs[state.win][other] && DATA.diffs[state.win][other][state.region];
+      if (pre) {
+        const im = new Image(); im.onload = () => ctx.drawImage(im, 0, 0); im.src = pre;
+        $("msg").textContent = `showing pre-rendered |${other} − baseline| ×${DATA.diff_gain} (live pair diff needs the folder served over http, e.g. python -m http.server)`;
+      } else {
+        ctx.clearRect(0, 0, n.w, n.h);
+        $("msg").textContent = "diff unavailable for this pair from file:// — serve the folder over http for live diffs";
+      }
+    }
+  };
+  whenReady();
+}
+function fmt(x, d = 3) { return (x === undefined || x === null || Number.isNaN(x)) ? "–" : (+x).toFixed(d); }
+function cls(a, b, higherBetter) {
+  if (a === undefined || b === undefined || a === b) return "";
+  return ((b > a) === higherBetter) ? "better" : "worse";
+}
+function renderPanel() {
+  const w = DATA.windows.find(x => x.name === state.win);
+  $("why").innerHTML = `<b>${w.name}</b> — ${w.role}<br>${w.clip.split("/").pop()} frame ${w.frame}, levelling ${w.levelling || "plain"}<br>${w.why || ""}`;
+  $("vdesc").innerHTML = Object.entries(DATA.variants).map(([k, d]) => `<tr><td>${k}</td><td style="text-align:left">${d}</td></tr>`).join("");
+  const mA = DATA.metrics[state.win][state.A] || {}, mB = DATA.metrics[state.win][state.B] || {};
+  const rows = [];
+  const row = (label, a, b, hb, d) => rows.push(`<tr><td>${label}</td><td>${fmt(a, d)}</td><td class="${cls(a, b, hb)}">${fmt(b, d)}</td></tr>`);
+  if (mA.dji || mB.dji) {
+    row("NCC vs DJI", mA.dji && mA.dji.ncc, mB.dji && mB.dji.ncc, true);
+    row("SSIM vs DJI", mA.dji && mA.dji.ssim, mB.dji && mB.dji.ssim, true);
+    row("edge-NCC vs DJI", mA.dji && mA.dji.edge_ncc, mB.dji && mB.dji.edge_ncc, true);
+    row("PSNR vs DJI (dB)", mA.dji && mA.dji.psnr_db, mB.dji && mB.dji.psnr_db, true, 2);
+  }
+  row("sharpness (full, downscaled)", mA.sharp && mA.sharp.full, mB.sharp && mB.sharp.full, true, 1);
+  const sa = mA.seam || {}, sb = mB.seam || {};
+  row("seam mismatch pre-stack (10-bit)", sa.pre, sb.pre, false, 2);
+  row("seam mismatch post-morph", sa.post, sb.post, false, 2);
+  rows.push(`<tr><td>seam stack engaged</td><td>${sa.photo === undefined ? "–" : (sa.photo ? "photo " : "") + (sa.flow ? "flow+dyn" : "")}</td><td>${sb.photo === undefined ? "–" : (sb.photo ? "photo " : "") + (sb.flow ? "flow+dyn" : "")}</td></tr>`);
+  row("sky gradient ±20° of seams (ptp %)", mA.gradient && mA.gradient.seam_ptp_pct, mB.gradient && mB.gradient.seam_ptp_pct, false, 2);
+  row("sky gradient global (ptp %)", mA.gradient && mA.gradient.global_ptp_pct, mB.gradient && mB.gradient.global_ptp_pct, false, 2);
+  $("metrics").innerHTML = `<tr><th></th><th>A: ${state.A}</th><th>B: ${state.B}</th></tr>` + rows.join("");
+  const regs = Object.keys(DATA.regions);
+  $("sharp").innerHTML = `<tr><th>region</th><th>A</th><th>B</th></tr>` + regs.map(r =>
+    `<tr><td>${r}</td><td>${fmt(mA.sharp && mA.sharp[r], 0)}</td><td class="${cls(mA.sharp && mA.sharp[r], mB.sharp && mB.sharp[r], true)}">${fmt(mB.sharp && mB.sharp[r], 0)}</td></tr>`).join("");
+  $("timing").innerHTML = `<tr><th>variant</th><th>stitch ms</th><th>setup s</th></tr>` + Object.entries(DATA.timing_ms).map(([k, t]) =>
+    `<tr><td>${k}</td><td>${fmt(t.stitch_ms, 1)}</td><td>${fmt(t.setup_s, 1)}</td></tr>`).join("") +
+    `<tr><td colspan=3 style="text-align:left;color:var(--mut)">${DATA.device}; ${Object.values(DATA.timing_ms)[0] ? Object.values(DATA.timing_ms)[0].note : ""}</td></tr>`;
+  $("notes").innerHTML = `Generated ${DATA.generated}. Metrics vs DJI are computed at ${DATA.full_width} px width after yaw alignment and tone matching (tools/validate_against_dji.py method); the DJI variant is shown in its own tone. Green/red mark B better/worse than A. Sharpness is Laplacian variance of the luma (higher = more high-frequency energy: sharper OR noisier — judge with your eyes). The bicubic kernel sharpens by nature; Catmull-Rom does not.`;
+}
+// pan / zoom / wipe interaction
+(() => {
+  const st = $("stage"); let drag = null;
+  st.addEventListener("mousedown", e => {
+    const n = natural(); const z = curZoom();
+    const x = (e.clientX - st.getBoundingClientRect().left);
+    if (state.mode === "wipe" && Math.abs(x - (state.px + n.w * z * state.wipe)) < 14) { drag = { wipe: true }; return; }
+    drag = { x: e.clientX, y: e.clientY, px: state.px, py: state.py }; st.classList.add("grabbing");
+    if (!state.zoom) state.zoom = curZoom();
+  });
+  window.addEventListener("mousemove", e => {
+    if (!drag) return;
+    const r = st.getBoundingClientRect();
+    if (drag.wipe) { const n = natural(); const z = curZoom(); state.wipe = Math.min(1, Math.max(0, ((e.clientX - r.left) - state.px) / (n.w * z))); layout(); return; }
+    state.px = drag.px + (e.clientX - drag.x); state.py = drag.py + (e.clientY - drag.y); layout();
+  });
+  window.addEventListener("mouseup", () => { drag = null; st.classList.remove("grabbing"); });
+  st.addEventListener("wheel", e => {
+    e.preventDefault();
+    const r = st.getBoundingClientRect(); const z0 = curZoom();
+    const z = Math.min(16, Math.max(0.05, z0 * Math.exp(-e.deltaY * 0.0015)));
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    state.px = mx - (mx - state.px) * z / z0; state.py = my - (my - state.py) * z / z0; state.zoom = z; layout();
+  }, { passive: false });
+  st.addEventListener("dblclick", e => {
+    // double-click: toggle fit <-> 1:1 around the pointer
+    if (state.zoom === 1) { state.zoom = null; layout(); return; }
+    const r = st.getBoundingClientRect(); const z0 = curZoom();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    state.px = mx - (mx - state.px) / z0; state.py = my - (my - state.py) / z0; state.zoom = 1; layout();
+  });
+  window.addEventListener("resize", layout);
+})();
+setupControls(); load();
+</script>
+</body>
+</html>
