@@ -21,7 +21,7 @@ def calibs() -> list[CameraCalib]:
     mk = lambda pitch, yaw: CameraCalib(f, f, FW / 2 - 0.5, FH / 2 - 0.5,
                                         (0.0, 0.0, 0.0, 0.0, 0.0), (0.0, 0.0),
                                         FW, FH, yaw, pitch, 0.0, None, None)
-    return [mk(90.0, 0.0), mk(-90.0, 180.0)]
+    return [mk(90.0, 0.0), mk(-90.0, 0.0)]
 
 
 def maps(w: int = W, h: int = H):

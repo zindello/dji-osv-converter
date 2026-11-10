@@ -127,9 +127,23 @@ class GpuStitcher:
                  lsc_gain: list[np.ndarray] | None = None,
                  rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840),
                  input_fmt: str = "yuv420p10le", yuv_range: str = "limited",
-                 compile: bool = True):
+                 compile: bool = True, single_pass: bool = False):
+        """
+        ``single_pass``: compose the per-frame levelling with the static lens
+        maps so each output pixel samples its fisheye ONCE (see
+        :meth:`_stitch_single_pass`).
+        """
         if torch is None:
             raise RuntimeError("torch is not installed")
+        self.single_pass = bool(single_pass)
+        self.lens_interp = "bilinear"
+        self._sp = None               # single-pass statics, built on first use
+        self._cams = cams
+        # Diagnostics of the last stitch's seam band (10-bit units): the
+        # inter-lens mean |A-B| over the inner blend band before the seam
+        # stack (``pre``) and after morph (``post``, None when the flow did
+        # not engage), plus which parts engaged. Read by tools/ab_compare.py.
+        self.seam_stats: dict | None = None
         dev = pick_device(device)
         self.dev = torch.device(dev)
         self.W, self.H = width, height
@@ -489,21 +503,9 @@ class GpuStitcher:
         # queue - measured +100 ms on the whole stitch).
         an4 = F.avg_pool2d(Ya[:, :, r0:r1], (1, 4))
         bn4 = F.avg_pool2d(Yb[:, :, r0:r1], (1, 4))
-        ab = torch.cat([an4, bn4], 0).cpu().numpy()
-        an, bn = ab[0, 0], ab[1, 0]
-        lut, spatial = seam_luma_offsets(an, bn, self._sf_inner4,
-                                         lo=self.y_lo, hi=self.y_hi, n_lut=1024,
-                                         sigma=SEAM_OFFSET_SIGMA,
-                                         agree_t=SEAM_OFFSET_AGREE_T)
-        from .constants import SEAM_AUTO_PHOTO_T, SEAM_DYN_GATE_LO
-        need_photo = (not auto) or (np.abs(lut).max() > SEAM_AUTO_PHOTO_T
-                                    or np.abs(spatial).max() > SEAM_AUTO_PHOTO_T)
-        if not need_photo:
-            lut = np.zeros_like(lut)
-            spatial = np.zeros_like(spatial)
-        else:
-            lut_t = torch.from_numpy(0.5 * lut).to(self.dev)
-            sp = torch.from_numpy(0.5 * spatial).to(self.dev)[None, None]
+        est = self._seam_estimate(an4, bn4, auto)
+        if est["photo"] is not None:
+            lut_t, sp = est["photo"]
             sp = F.interpolate(sp, size=(r1 - r0, W), mode="bilinear",
                                align_corners=False)[0, 0]
             ramp = sf["ramp"]                             # (bh,1): 0 edges, 1 in band
@@ -511,28 +513,9 @@ class GpuStitcher:
                 band = plane[:, :, r0:r1]
                 corr = lut_t[band.clamp(0, 1023).long()] + sp
                 plane[:, :, r0:r1] = band + sgn * corr * ramp
-
-        # Flow grays on the CPU from the same pooled data, correction applied
-        # (10-bit centred Y -> 8-bit gray for Farneback; the small pool-order
-        # difference vs pooling the corrected full-res planes is negligible
-        # for flow). Assumes SEAM_FLOW_SCALE == the estimator's 1/4 pooling.
-        k = max(int(round(1.0 / SEAM_FLOW_SCALE)), 1)
-        cA = an + 0.5 * (lut[np.clip(an.astype(np.int64), 0, 1023)] + spatial)
-        cB = bn - 0.5 * (lut[np.clip(bn.astype(np.int64), 0, 1023)] + spatial)
-        if auto:
-            # Parallax detector: engage flow + dynamic seam only when some
-            # column's mean disagreement clears the gate's own threshold -
-            # below it the gate would zero the dynamic seam anyway.
-            d = np.abs(cB - cA) * self._sf_inner4
-            col = d.sum(0) / np.maximum(self._sf_inner4.sum(0), 1)
-            if col.max() * 0.25 < SEAM_DYN_GATE_LO:      # 10-bit -> 8-bit
-                return Ya, UVa, Yb, UVb, None, None
-        bh4 = (cA.shape[0] // k) * k
-        pr = lambda x: x[:bh4].reshape(bh4 // k, k, x.shape[1]).mean(1)
-        ga = np.clip(pr(cA) * 0.25, 0, 255).astype(np.uint8)
-        gb = np.clip(pr(cB) * 0.25, 0, 255).astype(np.uint8)
-        f01s, f10s = seam_flow_small(ga, gb)             # small-res px units
-        sh, sw = ga.shape
+        if est["flow"] is None:
+            return Ya, UVa, Yb, UVb, None, None
+        f01s, f10s, sh, sw = est["flow"]
         bh = r1 - r0
 
         def up(f, size, w_full, h_full):
@@ -568,6 +551,7 @@ class GpuStitcher:
         from .constants import SEAM_DYN_FEATHER_PX
         d4 = F.avg_pool2d((Ya[:, :, r0:r1] - Yb[:, :, r0:r1]).abs(), (1, 4))[0, 0]
         cost = d4.cpu().numpy().astype(np.float32) * 0.25       # 10-bit -> 8-bit
+        self.seam_stats["post"] = float(cost[self._sf_inner4].mean() * 4.0)
         seam = seam_path(np.where(self._sf_inner4, cost, 1e6).astype(np.float32), W)
         gate = seam_gate(cost, self._sf_inner4, W)
         seam_t = torch.from_numpy(seam).to(self.dev)
@@ -579,6 +563,273 @@ class GpuStitcher:
         wd = g_t * wd + (1.0 - g_t) * self.w3[0, 0, r0:r1]
         wd = wd[None, None]
         return Ya, UVa, Yb, UVb, wd, F.avg_pool2d(wd, 2)
+
+    def _seam_estimate(self, an4, bn4, auto: bool) -> dict:
+        """CPU side of the seam stack from the two lenses' pooled band crops.
+
+        ``an4``/``bn4`` are (1,1,bh,W/4) device tensors (the blend band of
+        each warped lens, pooled 4x along the row). ONE device->host sync
+        feeds both the photometric estimator and the flow grays (a second
+        pooled download mid-pipeline stalls the MPS queue - measured +100 ms
+        on the whole stitch). Returns ``photo`` = (lut_t (1024,), sp
+        (1,1,bh,W/4) device tensors, both already halved for the split
+        apply) or None, and ``flow`` = (f01s, f10s, sh, sw) small-res px
+        fields or None (auto mode: the detector said no parallax).
+        """
+        from .stitcher import seam_flow_small, seam_luma_offsets
+        from .constants import (SEAM_AUTO_PHOTO_T, SEAM_DYN_GATE_LO, SEAM_FLOW_SCALE,
+                                SEAM_OFFSET_AGREE_T, SEAM_OFFSET_SIGMA)
+        ab = torch.cat([an4, bn4], 0).cpu().numpy()
+        an, bn = ab[0, 0], ab[1, 0]
+        inner = self._sf_inner4
+        self.seam_stats = {"pre": float(np.abs(an - bn)[inner].mean()) if inner.any() else 0.0,
+                           "photo": False, "flow": False, "post": None}
+        lut, spatial = seam_luma_offsets(an, bn, self._sf_inner4,
+                                         lo=self.y_lo, hi=self.y_hi, n_lut=1024,
+                                         sigma=SEAM_OFFSET_SIGMA,
+                                         agree_t=SEAM_OFFSET_AGREE_T)
+        need_photo = (not auto) or (np.abs(lut).max() > SEAM_AUTO_PHOTO_T
+                                    or np.abs(spatial).max() > SEAM_AUTO_PHOTO_T)
+        photo = None
+        if not need_photo:
+            lut = np.zeros_like(lut)
+            spatial = np.zeros_like(spatial)
+        else:
+            photo = (torch.from_numpy(0.5 * lut).to(self.dev),
+                     torch.from_numpy(0.5 * spatial).to(self.dev)[None, None])
+            self.seam_stats["photo"] = True
+        # Flow grays on the CPU from the same pooled data, correction applied
+        # (10-bit centred Y -> 8-bit gray for DIS; the small pool-order
+        # difference vs pooling the corrected full-res planes is negligible
+        # for flow). Assumes SEAM_FLOW_SCALE == the estimator's 1/4 pooling.
+        k = max(int(round(1.0 / SEAM_FLOW_SCALE)), 1)
+        cA = an + 0.5 * (lut[np.clip(an.astype(np.int64), 0, 1023)] + spatial)
+        cB = bn - 0.5 * (lut[np.clip(bn.astype(np.int64), 0, 1023)] + spatial)
+        if auto:
+            # Parallax detector: engage flow + dynamic seam only when some
+            # column's mean disagreement clears the gate's own threshold -
+            # below it the gate would zero the dynamic seam anyway.
+            d = np.abs(cB - cA) * self._sf_inner4
+            col = d.sum(0) / np.maximum(self._sf_inner4.sum(0), 1)
+            if col.max() * 0.25 < SEAM_DYN_GATE_LO:      # 10-bit -> 8-bit
+                return {"photo": photo, "flow": None}
+        bh4 = (cA.shape[0] // k) * k
+        pr = lambda x: x[:bh4].reshape(bh4 // k, k, x.shape[1]).mean(1)
+        ga = np.clip(pr(cA) * 0.25, 0, 255).astype(np.uint8)
+        gb = np.clip(pr(cB) * 0.25, 0, 255).astype(np.uint8)
+        f01s, f10s = seam_flow_small(ga, gb)             # small-res px units
+        sh, sw = ga.shape
+        self.seam_stats["flow"] = True
+        return {"photo": photo, "flow": (f01s, f10s, sh, sw)}
+
+    # ---- single-pass resample --------------------------------------------
+    #
+    # The two-pass stitch warps each fisheye into the rig equirect, blends,
+    # then rotates the blended pano by the per-frame R with a second
+    # grid_sample: every output pixel is interpolated twice (bilinear MTF
+    # multiplies: cos^2 instead of cos), and the second pass carries the
+    # asin pole singularity exactly where the lens axes land (the front and
+    # back centres of the output). It also sampled the pano with a
+    # (W-1)/W stretch (grid_sample's align_corners=True maps +-1 onto the
+    # edge pixel CENTRES while the pano's pixel for longitude lon is
+    # lon/2pi*W + W/2, not *(W-1)) and clamped the wrap column instead of
+    # wrapping it.
+    #
+    # Here the static lens maps (fisheye pixel per rig direction) are padded
+    # by one wrapped column and one pole row to (H+1, W+1), so the level
+    # grid - gx = lon/pi, gy = -2 lat/pi - indexes them EXACTLY under
+    # align_corners=True (pixel x = (gx+1)/2 * W, no stretch, wrap column
+    # real). Per frame: sample each lens's uv map at the level grid (the map
+    # is a smooth function of direction, so interpolating it is safe), then
+    # sample the fisheye ONCE at that uv. Weights are sampled the same way.
+    # The seam stack keeps working in the rig band: the band rows of each
+    # lens are warped (cheap: ~1/8 of the sphere) for the detectors, and
+    # the resulting fields - flow morph, photometric offset, dynamic seam
+    # weights - are sampled at the output's rig coordinates and applied to
+    # the once-sampled pixels, so the band too is interpolated once instead
+    # of three times (warp, morph, level).
+
+    def _sp_init(self):
+        H, W = self.H, self.W
+        dev = self.dev
+
+        def pad_hw(t):
+            """(1,C,H,W) -> (1,C,H+1,W+1): wrap column, then the pole row."""
+            t = torch.cat([t, t[:, :, :, :1]], 3)
+            # Row H is the south pole (lat = -pi/2): one direction for every
+            # column, so the map is the same value across the row. Linear
+            # extrapolation from the last two rows reaches it: in the lens
+            # the pixel offset from the axis is linear in the polar angle,
+            # which is linear in the row (u ~ f*theta*cos(lon) with theta -> 0
+            # at the pole); the -1 fill of the other lens extrapolates to -1.
+            return torch.cat([t, 2.0 * t[:, :, -1:] - t[:, :, -2:-1]], 2)
+
+        def pad_hw_rep(t):
+            t = torch.cat([t, t[:, :, :, :1]], 3)
+            return torch.cat([t, t[:, :, -1:]], 2)
+
+        uv_pad = []
+        for c in self._cams:
+            uv = torch.from_numpy(np.stack([c.map_x, c.map_y], 0).astype(np.float32))
+            uv_pad.append(pad_hw(uv[None].to(dev)).contiguous())
+        w_pad = pad_hw_rep(self.w3).contiguous()
+        lsc_pad = None
+        if self.lsc_Y is not None:
+            lsc_pad = [pad_hw_rep(g).contiguous() for g in self.lsc_Y]
+        r0, r1 = self._sf_rows
+        bh = r1 - r0
+        self._sp = dict(uv=uv_pad, w=w_pad, lsc=lsc_pad, bh=bh,
+                        # band-field sampling: rows r0..r1-1 of the rig pano
+                        # -> normalised [-1,1] over the (bh) band rows
+                        band_scale=float(H) / max(bh - 1, 1),
+                        band_shift=-(2.0 * r0 / max(bh - 1, 1)) - 1.0)
+
+    def _sp_band_grid(self, g):
+        """Level grid (1,h,w,2) -> grid over a (bh, W+1) band field, zero outside."""
+        sp = self._sp
+        gy = (g[..., 1] + 1.0) * sp["band_scale"] + sp["band_shift"]
+        return torch.stack([g[..., 0], gy], -1)
+
+    def _sp_pad_band(self, t):
+        """(1,C,bh,W) band field -> (1,C,bh,W+1) with the wrap column."""
+        return torch.cat([t, t[:, :, :, :1]], 3).contiguous()
+
+    def _sp_sample_lens(self, Y, UV, i, g, gh):
+        """Sample lens ``i`` once at rig grids g (full) / gh (half-res chroma)."""
+        sp = self._sp
+        fw, fh = float(self.fw), float(self.fh)
+        uv = F.grid_sample(sp["uv"][i], g, mode="bilinear", align_corners=True,
+                           padding_mode="border")                   # (1,2,H,W) lens px
+        gl = torch.stack([uv[:, 0] * (2.0 / (fw - 1)) - 1.0,
+                          uv[:, 1] * (2.0 / (fh - 1)) - 1.0], -1)
+        Ys = F.grid_sample(Y, gl, mode="bilinear", align_corners=True,
+                           padding_mode="zeros")
+        uvh = F.grid_sample(sp["uv"][i], gh, mode="bilinear", align_corners=True,
+                            padding_mode="border")
+        # 4:2:0 chroma, MPEG-2 "left" siting: chroma sample (i, j) sits at
+        # luma (2i, 2j + 0.5), so luma px (u, v) -> chroma px (u/2, (v-0.5)/2).
+        glh = torch.stack([uvh[:, 0] * (1.0 / (fw / 2 - 1)) - 1.0,
+                           (uvh[:, 1] - 0.5) * (1.0 / (fh / 2 - 1)) - 1.0], -1)
+        UVs = F.grid_sample(UV, glh, mode="bilinear", align_corners=True,
+                            padding_mode="zeros")
+        if sp["lsc"] is not None:
+            gain = F.grid_sample(sp["lsc"][i], g, mode="bilinear", align_corners=True,
+                                 padding_mode="border")
+            gainh = gain[:, :, ::2, ::2]
+            Ys = (Ys - self.y_lo) * gain + self.y_lo
+            UVs = (UVs - 512.0) * gainh + 512.0
+        return Ys, UVs
+
+    def _sp_seam_fields(self, Y0, UV0, Y1, UV1, auto: bool):
+        """Run the seam stack on band-only rig warps; return fields to apply.
+
+        Returns None (nothing engaged), else a dict with ``flow`` (two
+        (1,2,bh,W+1) morph offsets in rig px, already ramped by the blend
+        weights, or None), ``photo`` (lut_t (1024,), (1,1,bh,W+1) ramped
+        spatial offset, (1,1,bh,W+1) ramp) or None, and ``wd`` (the
+        (1,1,bh,W+1) dynamic-minus-static weight delta) or None.
+        """
+        from .constants import SEAM_FLOW_MAX_SHIFT_PX
+        if self._sf is None:
+            self._sf_init()
+        sf = self._sf
+        r0, r1 = self._sf_rows
+        bh, W, H = r1 - r0, self.W, self.H
+        gs = lambda img, grid: F.grid_sample(img, grid, mode="bilinear",
+                                             align_corners=True, padding_mode="border")
+        # band-only rig warps (bilinear: the detectors were tuned on it)
+        Ya = gs(Y0, self.grid[0][:, r0:r1])
+        Yb = gs(Y1, self.grid[1][:, r0:r1])
+        est = self._seam_estimate(F.avg_pool2d(Ya, (1, 4)), F.avg_pool2d(Yb, (1, 4)), auto)
+        out = {"flow": None, "photo": None, "wd": None}
+        ramp = sf["ramp"]                                            # (bh,1)
+        if est["photo"] is not None:
+            lut_t, sp = est["photo"]
+            sp = F.interpolate(sp, size=(bh, W), mode="bilinear", align_corners=False)
+            out["photo"] = (lut_t, self._sp_pad_band(sp * ramp),
+                            self._sp_pad_band(ramp.expand(bh, W)[None, None]))
+            for plane, sgn in ((Ya, 1.0), (Yb, -1.0)):
+                plane += sgn * (lut_t[plane.clamp(0, 1023).long()] + sp[0, 0]) * ramp
+        if est["flow"] is None:
+            return out if out["photo"] is not None else None
+        f01s, f10s, sh, sw = est["flow"]
+
+        def up_px(f):
+            t = torch.from_numpy(np.ascontiguousarray(f)).to(self.dev)
+            t = t.permute(2, 0, 1).unsqueeze(0)                      # (1,2,sh,sw)
+            t = F.interpolate(t, size=(bh, W), mode="bilinear", align_corners=False)
+            fx = (t[:, 0] * (W / sw)).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
+            fy = (t[:, 1] * (bh / sh)).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
+            return torch.stack([fx, fy], 1)                         # (1,2,bh,W) px
+
+        o01 = up_px(f01s) * sf["t0"]
+        o10 = up_px(f10s) * sf["t1"]
+        out["flow"] = (self._sp_pad_band(o01), self._sp_pad_band(o10))
+        # the dynamic seam needs the MORPHED band disagreement: morph the band
+        # crops (crop-local grid) the way the two-pass path morphs the planes
+        ys = torch.linspace(-1.0, 1.0, bh, device=self.dev)
+        xs = torch.linspace(-1.0, 1.0, W, device=self.dev)
+        gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+        base = torch.stack([gx, gy], -1).unsqueeze(0)
+        to_n = lambda o: torch.stack([o[:, 0] * (2.0 / (W - 1)),
+                                      o[:, 1] * (2.0 / (bh - 1))], -1)
+        Ma = gs(Ya, base + to_n(o01))
+        Mb = gs(Yb, base + to_n(o10))
+        from .stitcher import seam_gate, seam_path
+        from .constants import SEAM_DYN_FEATHER_PX
+        d4 = F.avg_pool2d((Ma - Mb).abs(), (1, 4))[0, 0]
+        cost = d4.cpu().numpy().astype(np.float32) * 0.25           # 10-bit -> 8-bit
+        self.seam_stats["post"] = float(cost[self._sf_inner4].mean() * 4.0)
+        seam = seam_path(np.where(self._sf_inner4, cost, 1e6).astype(np.float32), W)
+        gate = seam_gate(cost, self._sf_inner4, W)
+        seam_t = torch.from_numpy(seam).to(self.dev)
+        g_t = torch.from_numpy(gate).to(self.dev)[None, :]
+        yy = torch.arange(bh, device=self.dev, dtype=torch.float32)[:, None]
+        wd = (0.5 + (seam_t[None, :] - yy) / SEAM_DYN_FEATHER_PX).clamp(0, 1)
+        if not self._sf_cam0_top:
+            wd = 1.0 - wd
+        wstat = self.w3[0, 0, r0:r1]
+        wd = g_t * wd + (1.0 - g_t) * wstat
+        out["wd"] = self._sp_pad_band((wd - wstat)[None, None])
+        return out
+
+    def _stitch_single_pass(self, y0, y1, R: np.ndarray, seam_flow=False):
+        """One interpolation per lens per output pixel (see the notes above)."""
+        if self._sp is None:
+            self._sp_init()
+        Y0, U0, V0 = self._split_yuv(y0)
+        Y1, U1, V1 = self._split_yuv(y1)
+        UV0, UV1 = torch.cat([U0, V0], 1), torch.cat([U1, V1], 1)
+        gf = self._level_grid(R)                                     # (1,H,W,2)
+        fields = None
+        if seam_flow:
+            fields = self._sp_seam_fields(Y0, UV0, Y1, UV1, auto=(seam_flow == "auto"))
+        zs = lambda t, grid: F.grid_sample(t, grid, mode="bilinear",
+                                           align_corners=True, padding_mode="zeros")
+        gb = self._sp_band_grid(gf) if fields is not None else None
+        H, W = self.H, self.W
+        planes = []
+        for i, (Y, UV) in enumerate(((Y0, UV0), (Y1, UV1))):
+            g = gf
+            if fields is not None and fields["flow"] is not None:
+                off = zs(fields["flow"][i], gb)                      # (1,2,H,W) rig px
+                g = gf + torch.stack([off[:, 0] * (2.0 / W), off[:, 1] * (2.0 / H)], -1)
+            gh = g[:, ::2, ::2, :].contiguous()
+            planes.append(self._sp_sample_lens(Y, UV, i, g, gh))
+        (Ya, UVa), (Yb, UVb) = planes
+        if fields is not None and fields["photo"] is not None:
+            lut_t, sp_f, ramp_f = fields["photo"]
+            spf = zs(sp_f, gb)
+            rmp = zs(ramp_f, gb)
+            Ya = Ya + (lut_t[Ya.clamp(0, 1023).long()] * rmp + spf)
+            Yb = Yb - (lut_t[Yb.clamp(0, 1023).long()] * rmp + spf)
+        w = F.grid_sample(self._sp["w"], gf, mode="bilinear", align_corners=True,
+                          padding_mode="border")
+        if fields is not None and fields["wd"] is not None:
+            w = w + zs(fields["wd"], gb)
+        Y = torch.lerp(Yb, Ya, w)
+        UV = torch.lerp(UVb, UVa, F.avg_pool2d(w, 2))      # as the two-pass w3h
+        return Y, UV
 
     def _spatial_gain(self, Ya, Yb, max_gain: float):
         """Smooth luma gain field from the overlap, at low res.
@@ -686,6 +937,11 @@ class GpuStitcher:
                     exposure: bool = False, wb: bool = False, rs=None,
                     seam_flow=False):
         """The full stitch, minus the device->host fetch: (Y, UV) on-device."""
+        if self.single_pass and not exposure and (rs is None or self.rs_tau is None):
+            # The exposure matcher and the RS grids work on full rig panos,
+            # which the single-pass path never materialises; they fall back
+            # to the two-pass stitch (both are off by default).
+            return self._stitch_single_pass(y0, y1, R, seam_flow=seam_flow)
         if rs is not None and self.rs_tau is not None:
             th = torch.from_numpy(np.ascontiguousarray(rs[0])).to(self.dev)
             rs = (th, rs[1], rs[2])
