@@ -48,6 +48,16 @@ def _default_codec() -> str:
     return "libx265"
 
 
+def _open_output(path: str) -> "av.container.OutputContainer":
+    """Open the output as an MP4 regardless of its extension.
+
+    PyAV guesses the container from the extension; a temporary name such as
+    ``out.mp4.partial`` (what a worker writes before publishing) would fail
+    or mux something else. The converter always produces an MP4, so say so.
+    """
+    return av.open(path, "w", format="mp4")
+
+
 def _pick_pix_fmt(codec: str, bit10: bool) -> str:
     # Hardware encoders take the packed 10-bit layout (which is also exactly
     # what GpuStitcher emits); software encoders take planar.
@@ -106,6 +116,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     (B-frames forced off so dts stays monotonic across seams). Auto reads the
     card's engine count from ``constants.GPU_ENGINES`` (unknown cards: 1);
     any count still produces correct output (sessions timeslice the engine).
+
+    The output is always muxed as MP4 regardless of the path's extension
+    (temporary names such as ``out.mp4.partial`` are fine).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
@@ -147,7 +160,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     n_frames = count if count is not None else (total - start if total else None)
     a_src = src.streams.audio[0] if (audio and src.streams.audio) else None
 
-    out = av.open(output_mp4, "w")
+    out = _open_output(output_mp4)
     vs = out.add_stream(codec, rate=fps)
     vs.width, vs.height = width, height
     vs.pix_fmt = _pick_pix_fmt(codec, bit10)
