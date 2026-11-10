@@ -15,6 +15,7 @@ Everything is derived from the OSV; the ffmpeg binary is never invoked.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from fractions import Fraction
@@ -31,6 +32,58 @@ from .spherical import inject_spherical
 from . import stitch_gpu
 
 logger = logging.getLogger(__name__)
+
+
+def set_compile_cache_dir(path: str | Path | None) -> None:
+    """Point torch.compile's on-disk caches at a persistent directory.
+
+    The level-grid and pack kernels are torch.compile'd per process (~28 s
+    on the V100, ~3 s on an M3). Inductor's FX-graph cache and Triton's
+    kernel cache make a warm start a second or two - but they live under
+    the temp dir by default, which a container loses on restart. Call this
+    BEFORE the first compile (inductor pins the directory on first use);
+    an existing TORCHINDUCTOR_CACHE_DIR / TRITON_CACHE_DIR in the
+    environment is honoured and never overridden by a None here.
+    """
+    if path is None:
+        return
+    path = str(Path(path))
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(path, "inductor")
+    os.environ["TRITON_CACHE_DIR"] = os.path.join(path, "triton")
+    for d in ("inductor", "triton"):
+        os.makedirs(os.path.join(path, d), exist_ok=True)
+
+
+# One GpuStitcher kept alive across convert() calls: its device tensors
+# (grids, weights, compiled kernels) depend only on the rig geometry and the
+# stitch options, so the next file from the same camera skips the whole GPU
+# setup. Bounded to one entry (an 8K stitcher holds ~1-2 GB of statics).
+_GPU_CACHE: dict = {}
+
+
+def _gpu_stitcher(stitcher: "Stitcher360", maps, width, height, lsc, use_rs, gpu_fmt,
+                  yuv_range, single_pass, lens_interp, reuse: bool):
+    key = (stitcher.geometry_key(), width, height, bool(lsc), bool(use_rs), gpu_fmt,
+           yuv_range, bool(single_pass), lens_interp, stitch_gpu.pick_device())
+    if reuse and _GPU_CACHE.get("key") == key:
+        return _GPU_CACHE["stitcher"]
+    g = stitch_gpu.GpuStitcher(
+        maps, band_px=stitcher.seam_overlap_ratio * width,
+        width=width, height=height,
+        lsc_gain=stitcher.lsc_gains() if lsc else None,
+        rs_tables=stitcher.rs_tables() if use_rs else None,
+        fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
+        input_fmt=gpu_fmt, yuv_range=yuv_range,
+        single_pass=single_pass, lens_interp=lens_interp)
+    if reuse:
+        _GPU_CACHE.clear()
+        _GPU_CACHE.update(key=key, stitcher=g)
+    return g
+
+
+def clear_gpu_cache() -> None:
+    """Drop the cached GpuStitcher (frees its device memory)."""
+    _GPU_CACHE.clear()
 
 
 def _default_codec(allow_software: bool = False) -> str:
@@ -158,6 +211,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             allow_software: bool = False, enc_options: dict | None = None,
             colour_tags: bool = True, enc_inflight_frames: int | None = None,
             single_pass: bool = False, lens_interp: str = "bilinear",
+            reuse: bool = True, compile_cache_dir: str | Path | None = None,
             progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
@@ -219,10 +273,17 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     "catmull" (Catmull-Rom, accurate, ~9x the warp cost) - see
     :class:`~dji_osv_converter.stitch_gpu.GpuStitcher`.
 
+    ``reuse`` (default on) keeps the built rig geometry and the GpuStitcher
+    alive across calls in this process, so converting many files from the
+    same camera pays the setup once (:class:`Converter` wraps this);
+    ``compile_cache_dir`` persists torch.compile's caches across processes
+    (see :func:`set_compile_cache_dir`).
+
     The output is always muxed as MP4 regardless of the path's extension
     (temporary names such as ``out.mp4.partial`` are fine).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
+    set_compile_cache_dir(compile_cache_dir)
     if codec is None:
         codec = _default_codec(allow_software)
     stitcher = Stitcher360.from_file(input_osv, width=width, height=height,
@@ -254,14 +315,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
 
     if use_gpu:
         maps, _ = stitcher.maps_for()
-        gpu_stitch = stitch_gpu.GpuStitcher(
-            maps, band_px=stitcher.seam_overlap_ratio * width,
-            width=width, height=height,
-            lsc_gain=stitcher.lsc_gains() if lsc else None,
-            rs_tables=stitcher.rs_tables() if use_rs else None,
-            fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
-            input_fmt=gpu_fmt, yuv_range=yuv_range,
-            single_pass=single_pass, lens_interp=lens_interp)
+        gpu_stitch = _gpu_stitcher(stitcher, maps, width, height, lsc, use_rs, gpu_fmt,
+                                   yuv_range, single_pass, lens_interp, reuse)
     fps = Fraction(vid.average_rate).limit_denominator(90000)
     total = vid.frames or 0
     n_frames = count if count is not None else (total - start if total else None)
@@ -627,4 +682,39 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     return output_mp4
 
 
-__all__ = ["convert", "encoder_options"]
+class Converter:
+    """Convert many files in one long-lived process with the setup paid once.
+
+        conv = Converter(levelling="rocksteady_horizon", compile_cache_dir="/offcuts/cache")
+        for src, dst in jobs:
+            conv.convert(src, dst)
+
+    Any :func:`convert` keyword can be given here as a default and
+    overridden per call. The rig geometry and the GPU stitcher are reused
+    while the camera calibration and stitch options stay the same (a change
+    rebuilds them transparently). ``close()`` drops the caches.
+    """
+
+    def __init__(self, **defaults):
+        self.defaults = dict(defaults)
+        self.defaults.setdefault("reuse", True)
+        set_compile_cache_dir(self.defaults.get("compile_cache_dir"))
+
+    def convert(self, input_osv, output_mp4, **overrides) -> str:
+        kw = {**self.defaults, **overrides}
+        return convert(input_osv, output_mp4, **kw)
+
+    def close(self) -> None:
+        from .pipeline import clear_geometry_cache
+        clear_geometry_cache()
+        clear_gpu_cache()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+
+__all__ = ["convert", "Converter", "encoder_options", "set_compile_cache_dir",
+           "clear_gpu_cache"]

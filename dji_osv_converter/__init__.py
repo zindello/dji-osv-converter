@@ -54,4 +54,4 @@ from .project import build_map
 from .decode import iter_pairs
 from .spherical import inject_spherical
 from .stitch_gpu import GpuStitcher, p010_to_bgr
-from .video import convert
+from .video import convert, Converter

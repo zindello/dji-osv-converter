@@ -198,6 +198,47 @@ def smoothed_rotation_track(quats: np.ndarray, sigma: float = RS_SIGMA,
     return raw, smooth
 
 
+def geometry_key(calibs: list[CameraCalib], width: int, height: int, fov_deg: float,
+                 seam_overlap_ratio: float) -> str:
+    """Stable hash of everything the static remap tables depend on.
+
+    Files from the same unit share their calibration, so the (seconds-long)
+    map build and seam-weight construction can be reused across files in a
+    long-lived process. The key covers every calibration field the
+    projection reads plus the output geometry; anything else (metadata,
+    mount, levelling) is per file and cheap.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for c in calibs:
+        h.update(repr((float(c.fx), float(c.fy), float(c.cx), float(c.cy),
+                       tuple(float(k) for k in c.k), tuple(float(x) for x in (c.p or (0, 0))),
+                       int(c.width), int(c.height), float(c.yaw), float(c.pitch),
+                       float(c.roll), tuple(float(q) for q in c.quat) if c.quat else None)
+                      ).encode())
+    h.update(repr((int(width), int(height), float(fov_deg), float(seam_overlap_ratio),
+                   EXTRINSIC_SOURCE, EXTRINSIC_ORDER, float(FEATHER_FRACTION))).encode())
+    return h.hexdigest()
+
+
+# Process-wide cache of built rig geometry (maps + seam weights) keyed by
+# geometry_key: the second file from the same camera pays no map build.
+# Bounded: one 8K entry is ~1.3 GB (f32 maps + masks + weights).
+_RIG_CACHE: dict[str, tuple] = {}
+RIG_CACHE_ENTRIES = 2
+
+
+def _rig_cache_put(key: str, value: tuple) -> None:
+    _RIG_CACHE[key] = value
+    while len(_RIG_CACHE) > max(RIG_CACHE_ENTRIES, 1):
+        _RIG_CACHE.pop(next(iter(_RIG_CACHE)))
+
+
+def clear_geometry_cache() -> None:
+    """Drop the process-wide rig geometry cache."""
+    _RIG_CACHE.clear()
+
+
 @dataclass
 class Stitcher360:
     """Reusable stitcher for one OSV file.
@@ -251,6 +292,11 @@ class Stitcher360:
         hit = self._cache.get("rig")
         if hit is not None:
             return hit
+        key = self.geometry_key()
+        hit = _RIG_CACHE.get(key)
+        if hit is not None:
+            self._cache["rig"] = hit
+            return hit
         maps = [build_map(self.calibs[i], out_w=self.width, out_h=self.height,
                           source=EXTRINSIC_SOURCE, order=EXTRINSIC_ORDER,
                           max_fov_deg=self.fov_deg,
@@ -258,7 +304,13 @@ class Stitcher360:
                 for i in (0, 1)]
         weights = seam_weights(maps, band_px=self.seam_overlap_ratio * self.width)
         self._cache["rig"] = (maps, weights)
+        _rig_cache_put(key, (maps, weights))
         return maps, weights
+
+    def geometry_key(self) -> str:
+        """Hash of the static geometry (see :func:`geometry_key`)."""
+        return geometry_key(self.calibs, self.width, self.height, self.fov_deg,
+                            self.seam_overlap_ratio)
 
     def lsc_gains(self) -> list[np.ndarray] | None:
         """Per-lens devignetting gain maps (equirect), or None if no LSC data.
@@ -465,4 +517,6 @@ __all__ = [
     "smoothed_rotation_track",
     "transfer_gamma",
     "lsc_gain_map",
+    "geometry_key",
+    "clear_geometry_cache",
 ]
