@@ -144,5 +144,21 @@ class TestLevellingModes(unittest.TestCase):
         self.assertTrue(np.allclose(st.levelling_for(0), K_PLAIN))
 
 
+class TestPartialLsc(unittest.TestCase):
+    def test_alpha_scales_the_factory_curve_in_log_space(self):
+        from dji_osv_converter.pipeline import lsc_gain_map
+        from tests import _rig
+        cal = _rig.calibs()[0]
+        r = np.linspace(0, 40, 9)
+        cal.lsc = (r, np.clip(1.0 - 0.006 * r, 0.3, 1.0))        # 24% falloff at the rim
+        m = _rig.maps()[0]
+        full = lsc_gain_map(m, cal, gamma=2.2, alpha=1.0)
+        half = lsc_gain_map(m, cal, gamma=2.2, alpha=0.5)
+        none = lsc_gain_map(m, cal, gamma=2.2, alpha=0.0)
+        self.assertTrue(np.allclose(half, np.sqrt(full), atol=1e-5))
+        self.assertTrue(np.all(none == 1.0))
+        self.assertGreater(full.max(), 1.05)
+
+
 if __name__ == "__main__":
     unittest.main()

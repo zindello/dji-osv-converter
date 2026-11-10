@@ -63,14 +63,15 @@ _GPU_CACHE: dict = {}
 
 def _gpu_stitcher(stitcher: "Stitcher360", maps, width, height, lsc, use_rs, gpu_fmt,
                   yuv_range, single_pass, lens_interp, reuse: bool):
-    key = (stitcher.geometry_key(), width, height, bool(lsc), bool(use_rs), gpu_fmt,
+    alpha = 1.0 if lsc is True else (0.0 if not lsc else float(lsc))
+    key = (stitcher.geometry_key(), width, height, alpha, bool(use_rs), gpu_fmt,
            yuv_range, bool(single_pass), lens_interp, stitch_gpu.pick_device())
     if reuse and _GPU_CACHE.get("key") == key:
         return _GPU_CACHE["stitcher"]
     g = stitch_gpu.GpuStitcher(
         maps, band_px=stitcher.seam_overlap_ratio * width,
         width=width, height=height,
-        lsc_gain=stitcher.lsc_gains() if lsc else None,
+        lsc_gain=stitcher.lsc_gains(alpha) if alpha > 0 else None,
         rs_tables=stitcher.rs_tables() if use_rs else None,
         fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
         input_fmt=gpu_fmt, yuv_range=yuv_range,
@@ -204,7 +205,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             codec: str | None = None, bit10: bool = True,
             bitrate: int | None = None, bpp: float | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = False,
-            exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
+            exposure_wb: bool = False, levelling: str = "plain", lsc: bool | float = False,
             seam_flow: bool | str = "auto",
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, enc_sessions: int | None = None,
@@ -264,6 +265,11 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     when the source says so). ``enc_inflight_frames`` caps the 8K frames held
     across the encoder-session queues (None = one chunk + 2 x the stage
     queue, ~6 GB at 8K p010 - the old bound was per session, i.e. 3x that).
+
+    ``lsc`` may also be a float alpha in (0, 1]: a PARTIAL lens-shading
+    correction, the factory curve raised to ``alpha`` (``True`` = 1.0, the
+    full curve, which double-corrects ISP footage). The justified default is
+    0 (off); see IMPROVEMENTS.md for the measured residual falloff.
 
     ``single_pass`` (GPU path): compose the levelling with the lens maps so
     every output pixel is interpolated once instead of twice (sharper, no

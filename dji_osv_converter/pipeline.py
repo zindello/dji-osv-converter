@@ -103,21 +103,26 @@ def transfer_gamma(path: str | Path) -> float:
 
 
 def lsc_gain_map(cam_map: CameraMap, calib: CameraCalib,
-                 gamma: float = TRC_GAMMA_FALLBACK) -> np.ndarray | None:
+                 gamma: float = TRC_GAMMA_FALLBACK, alpha: float = 1.0) -> np.ndarray | None:
     """Per-output-pixel devignetting gain for one lens, or None if no LSC data.
 
     Inverts the f-theta radial map to recover the undistorted radius the factory
     curve (calibration fields 22/23) is authored in, looks up V, and returns
-    ``(1/V)^(1/gamma)`` matching ``cam_map``. ``gamma`` is the file's encoding
-    transfer (see :func:`transfer_gamma`).
+    ``(1/V)^(alpha/gamma)`` matching ``cam_map``. ``gamma`` is the file's
+    encoding transfer (see :func:`transfer_gamma`); ``alpha`` scales the
+    correction in log space (1 = the full factory curve, 0 = none).
 
     NOTE: the OSV fisheyes arrive already devignetted by the in-camera ISP, so
-    applying this on top double-corrects (a visible bright arc at the seam) -
-    it is OFF by default in :func:`video.convert` and retained only for footage
-    that is *not* already ISP-corrected.
+    applying the full curve (alpha=1) on top double-corrects (a visible bright
+    arc at the seam) - it is OFF by default in :func:`video.convert`. A
+    PARTIAL correction (small alpha) targets the residual falloff left by the
+    ISP; see IMPROVEMENTS.md for the measured residual, which is what sets
+    the justified alpha (0 unless the measurement says otherwise).
     """
     if calib.lsc is None:
         return None
+    if alpha <= 0.0:
+        return np.ones_like(cam_map.map_x, dtype=np.float32)
     r_lsc, v_lsc = calib.lsc
     r_sensor = np.hypot(cam_map.map_x - calib.cx, cam_map.map_y - calib.cy)
     theta_d = r_sensor / calib.fx
@@ -127,7 +132,7 @@ def lsc_gain_map(cam_map: CameraMap, calib: CameraCalib,
     theta = np.interp(theta_d, radial_map(tg, calib, "ftheta"), tg)
     undist_r = calib.fx * theta
     V = np.clip(np.interp(undist_r, r_lsc, v_lsc, right=v_lsc[-1]), 0.3, 1.0)
-    return ((1.0 / V) ** (1.0 / gamma)).astype(np.float32)
+    return ((1.0 / V) ** (float(alpha) / gamma)).astype(np.float32)
 
 
 def _rotvec(R: np.ndarray) -> np.ndarray:
@@ -312,18 +317,20 @@ class Stitcher360:
         return geometry_key(self.calibs, self.width, self.height, self.fov_deg,
                             self.seam_overlap_ratio)
 
-    def lsc_gains(self) -> list[np.ndarray] | None:
+    def lsc_gains(self, alpha: float = 1.0) -> list[np.ndarray] | None:
         """Per-lens devignetting gain maps (equirect), or None if no LSC data.
 
-        See :func:`lsc_gain_map` for why this is OFF by default.
+        ``alpha`` scales the factory curve (see :func:`lsc_gain_map`); the
+        full curve is OFF by default in convert().
         """
-        hit = self._cache.get("lsc")
+        key = ("lsc", float(alpha))
+        hit = self._cache.get(key)
         if hit is not None:
             return hit
         maps, _ = self.maps_for()
-        gains = [lsc_gain_map(maps[i], self.calibs[i], self.gamma) for i in (0, 1)]
+        gains = [lsc_gain_map(maps[i], self.calibs[i], self.gamma, alpha) for i in (0, 1)]
         gains = None if any(g is None for g in gains) else gains
-        self._cache["lsc"] = gains
+        self._cache[key] = gains
         return gains
 
     # ---- orientation tracks -------------------------------------------------
