@@ -176,6 +176,8 @@ def smoothed_rotation_track(quats: np.ndarray, sigma: float = RS_SIGMA,
     low-pass that removes shake while keeping the tumble.
     """
     N = len(quats)
+    if N == 0:                       # no metadata track at all
+        return np.zeros((0, 3, 3)), np.zeros((0, 3, 3))
     raw = np.stack([quat_to_matrix(q, order) if np.isfinite(q).all() else np.eye(3)
                     for q in quats])
     ok = np.array([np.isfinite(q).all() for q in quats])
@@ -389,14 +391,19 @@ class Stitcher360:
             # RIGHT to keep the cancellation intact; a steady camera renders
             # exactly like plain, as DJI does.
             raw, smooth = self._rs_track()
-            if frame < len(raw):
+            if len(raw):
+                # Past the end of the metadata track (it can run a frame or
+                # two short of the video) HOLD the last orientation: the old
+                # K_PLAIN fallback snapped the final frames to the raw layout.
+                f = min(frame, len(raw) - 1)
                 C = self.bridge()
-                return C @ raw[frame].T @ smooth[frame] @ C.T @ K_PLAIN
+                return C @ raw[f].T @ smooth[f] @ C.T @ K_PLAIN
             return K_PLAIN
         if self.levelling == "rocksteady_horizon":
             raw, _ = self._rs_track()
-            if frame < len(raw):
-                return horizon_lock_rotation(raw[frame], self.bridge())
+            if len(raw):
+                f = min(frame, len(raw) - 1)          # hold, as above
+                return horizon_lock_rotation(raw[f], self.bridge())
             return K_PLAIN
         return K_PLAIN   # "plain"
 

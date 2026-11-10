@@ -33,19 +33,98 @@ from . import stitch_gpu
 logger = logging.getLogger(__name__)
 
 
-def _default_codec() -> str:
-    """First available HEVC encoder on this machine.
+def _default_codec(allow_software: bool = False) -> str:
+    """First available hardware HEVC encoder on this machine.
 
-    VideoToolbox (macOS) > NVENC (NVIDIA/CUDA boxes) > libx265 (software,
-    everywhere). Keeps ``convert()`` runnable unmodified across platforms.
+    VideoToolbox (macOS) > NVENC (NVIDIA/CUDA boxes). ``libx265`` is chosen
+    only with ``allow_software=True``: an 8K software encode runs at a few
+    frames per MINUTE on the target hosts, so a silent fallback (the old
+    behaviour) turns a lost NVENC into a days-long job nobody asked for.
+    Pass ``codec="libx265"`` explicitly to use it deliberately.
     """
-    for name in ("hevc_videotoolbox", "hevc_nvenc", "libx265"):
+    for name in ("hevc_videotoolbox", "hevc_nvenc"):
         try:
             av.codec.Codec(name, "w")
             return name
         except Exception:
             continue
-    return "libx265"
+    if allow_software:
+        return "libx265"
+    raise RuntimeError("no hardware HEVC encoder (hevc_videotoolbox / hevc_nvenc) "
+                       "is available; pass codec='libx265' or allow_software=True "
+                       "to accept a software encode")
+
+
+# Colour description fields carried from the source to the output; the OSV
+# is tagged BT.709 limited range (prim/trc/matrix 1, range 1) and the output
+# was previously untagged (players guessed BT.709 for UHD; Resolve/YouTube
+# prefer explicit tags, DJI's own export carries them).
+_COLOUR_FIELDS = ("color_range", "color_primaries", "color_trc", "colorspace")
+
+
+def _source_colour(cc) -> dict:
+    """The source codec context's colour description, zeros/unspecified dropped."""
+    out = {}
+    for f in _COLOUR_FIELDS:
+        try:
+            v = int(getattr(cc, f))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        # 0 = unspecified range; 2 = unspecified primaries/trc/matrix
+        if (f == "color_range" and v != 0) or (f != "color_range" and v not in (0, 2)):
+            out[f] = v
+    return out
+
+
+def _apply_colour(cc, tags: dict) -> None:
+    for f, v in tags.items():
+        try:
+            setattr(cc, f, v)
+        except (AttributeError, ValueError):
+            pass
+
+
+def _yuv_range(cc) -> str:
+    """'limited' or 'full' from the source's declared range (0 = assume limited)."""
+    try:
+        return "full" if int(cc.color_range) == 2 else "limited"
+    except (TypeError, ValueError, AttributeError):
+        return "limited"
+
+
+def encoder_options(codec: str, *, preset: str | None = None, tune: str | None = None,
+                    aq: bool | None = None, lookahead: int | None = None,
+                    multipass: str | None = None, rc: str | None = None,
+                    extra: dict | None = None) -> dict:
+    """libav private options for the video encoder. ``None`` = libav default.
+
+    Everything here changes the encoder only, never the stitched frames.
+    For NVENC: ``preset`` p1..p7 (p7 slowest/best), ``tune`` hq/ll/ull,
+    ``aq`` enables spatial + temporal adaptive quantisation, ``lookahead``
+    sets ``rc-lookahead`` frames, ``multipass`` disabled/qres/fullres,
+    ``rc`` vbr/cbr/constqp. Which of these pay at 0.25 bpp on an 8K
+    panorama can only be measured on the NVIDIA box (see IMPROVEMENTS.md
+    for the exact test); the defaults are unchanged until then.
+    For software/VideoToolbox encoders only ``extra`` applies.
+    """
+    opts: dict = {}
+    if "nvenc" in codec:
+        if preset:
+            opts["preset"] = preset
+        if tune:
+            opts["tune"] = tune
+        if aq is not None:
+            opts["spatial-aq"] = "1" if aq else "0"
+            opts["temporal-aq"] = "1" if aq else "0"
+        if lookahead is not None:
+            opts["rc-lookahead"] = str(int(lookahead))
+        if multipass:
+            opts["multipass"] = multipass
+        if rc:
+            opts["rc"] = rc
+    if extra:
+        opts.update({k: str(v) for k, v in extra.items()})
+    return opts
 
 
 def _open_output(path: str) -> "av.container.OutputContainer":
@@ -70,12 +149,14 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             width: int = 7680, height: int = 3840,
             start: int = 0, count: int | None = None,
             codec: str | None = None, bit10: bool = True,
-            bitrate: int | None = None,
+            bitrate: int | None = None, bpp: float | None = None,
             hardware: bool = True, multiband: bool = False, exposure: bool = False,
             exposure_wb: bool = False, levelling: str = "plain", lsc: bool = False,
             seam_flow: bool | str = "auto",
             audio: bool = True, spherical: bool = True, gpu: bool = True,
             pipeline: bool | None = None, enc_sessions: int | None = None,
+            allow_software: bool = False, enc_options: dict | None = None,
+            colour_tags: bool = True, enc_inflight_frames: int | None = None,
             progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
@@ -117,12 +198,24 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     card's engine count from ``constants.GPU_ENGINES`` (unknown cards: 1);
     any count still produces correct output (sessions timeslice the engine).
 
+    ``allow_software``: with ``codec=None`` only hardware encoders are
+    auto-selected; a box without one raises instead of silently encoding 8K
+    on the CPU. ``enc_options`` are libav encoder options (see
+    :func:`encoder_options`); ``bpp`` overrides ``constants.BITRATE_BPP`` for
+    the rate-driven hardware encoders (``bitrate`` wins if both are given).
+    ``colour_tags`` copies the source's colour range/primaries/transfer/matrix
+    onto the output (default on; False restores the untagged output). The
+    stitch clamps to the source's declared range (limited by default, full
+    when the source says so). ``enc_inflight_frames`` caps the 8K frames held
+    across the encoder-session queues (None = one chunk + 2 x the stage
+    queue, ~6 GB at 8K p010 - the old bound was per session, i.e. 3x that).
+
     The output is always muxed as MP4 regardless of the path's extension
     (temporary names such as ``out.mp4.partial`` are fine).
     """
     input_osv, output_mp4 = str(input_osv), str(output_mp4)
     if codec is None:
-        codec = _default_codec()
+        codec = _default_codec(allow_software)
     stitcher = Stitcher360.from_file(input_osv, width=width, height=height,
                                      levelling=levelling)
 
@@ -144,6 +237,13 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         # planar. Probed BEFORE the GpuStitcher touches torch/CUDA - the
         # shared-primary-context hwdevice can't be created afterwards.
         gpu_fmt = gpu_decode_fmt(hardware, input_osv)
+
+    src = av.open(input_osv)
+    vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
+    src_colour = _source_colour(vid.codec_context)
+    yuv_range = _yuv_range(vid.codec_context)
+
+    if use_gpu:
         maps, _ = stitcher.maps_for()
         gpu_stitch = stitch_gpu.GpuStitcher(
             maps, band_px=stitcher.seam_overlap_ratio * width,
@@ -151,10 +251,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             lsc_gain=stitcher.lsc_gains() if lsc else None,
             rs_tables=stitcher.rs_tables() if use_rs else None,
             fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
-            input_fmt=gpu_fmt)
-
-    src = av.open(input_osv)
-    vid = next(s for s in src.streams.video if s.codec_context.name != "mjpeg")
+            input_fmt=gpu_fmt, yuv_range=yuv_range)
     fps = Fraction(vid.average_rate).limit_denominator(90000)
     total = vid.frames or 0
     n_frames = count if count is not None else (total - start if total else None)
@@ -179,9 +276,14 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         vs.bit_rate = bitrate
     elif "videotoolbox" in codec or "nvenc" in codec:
         # Hardware encoders are rate-driven, not quality-driven.
-        vs.bit_rate = int(width * height * float(fps) * BITRATE_BPP)
+        vs.bit_rate = int(width * height * float(fps) * (bpp or BITRATE_BPP))
     else:
         vs.options = {"crf": "18"}
+    enc_opts = dict(enc_options or {})
+    if enc_opts:
+        vs.options = {**(vs.options or {}), **enc_opts}
+    if colour_tags:
+        _apply_colour(vs.codec_context, src_colour)
 
     a_out = out.add_stream_from_template(a_src) if a_src is not None else None
 
@@ -305,6 +407,14 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             sess_qs = [queue.Queue(maxsize=chunk + 2 * PIPELINE_QUEUE_FRAMES)
                        for _ in range(n_sess)]
             mux_q: "queue.Queue" = queue.Queue()
+            # Total 8K frames alive across ALL session queues. Steady state
+            # is ~1 deep per session; this bounds the worst case (a stalled
+            # encoder) to one chunk's worth instead of one per session
+            # (3 x 68 x 88 MB = 18 GB before). Acquired by the builder,
+            # released by the session that encoded the frame; a dead stage
+            # is noticed through enc_err so the builder cannot hang on it.
+            inflight = threading.Semaphore(
+                enc_inflight_frames or (chunk + 2 * PIPELINE_QUEUE_FRAMES))
 
             def _builder():
                 try:
@@ -315,6 +425,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                                 q.put(enc_done)
                             return
                         pts, result = item
+                        while not inflight.acquire(timeout=0.5):
+                            if enc_err:
+                                raise enc_err[0]
                         fr = _build_frame(result)
                         fr.pts = pts
                         sess_qs[(pts // chunk) % n_sess].put(fr)
@@ -330,7 +443,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                 ctx.time_base = vs.time_base
                 ctx.framerate = fps
                 ctx.bit_rate = vs.bit_rate
-                ctx.options = {"bf": "0", "forced-idr": "1"}
+                ctx.options = {"bf": "0", "forced-idr": "1", **enc_opts}
+                if colour_tags:
+                    _apply_colour(ctx, src_colour)
                 ctx.flags |= av.codec.context.Flags.global_header
                 return ctx
 
@@ -360,7 +475,12 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                         if fr.pts % chunk == 0:
                             # chunk start -> forced IDR (closed chunk)
                             fr.pict_type = av.video.frame.PictureType.I
-                        for pkt in ctx.encode(fr):
+                        try:
+                            pkts = list(ctx.encode(fr))
+                        finally:
+                            del fr
+                            inflight.release()
+                        for pkt in pkts:
                             cid = pkt.pts // chunk
                             pending.setdefault(cid, []).append(pkt)
                             emit_before(cid)
@@ -497,4 +617,4 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     return output_mp4
 
 
-__all__ = ["convert"]
+__all__ = ["convert", "encoder_options"]

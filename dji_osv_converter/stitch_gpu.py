@@ -126,7 +126,8 @@ class GpuStitcher:
                  width: int, height: int, device: str | None = None,
                  lsc_gain: list[np.ndarray] | None = None,
                  rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840),
-                 input_fmt: str = "yuv420p10le"):
+                 input_fmt: str = "yuv420p10le", yuv_range: str = "limited",
+                 compile: bool = True):
         if torch is None:
             raise RuntimeError("torch is not installed")
         dev = pick_device(device)
@@ -134,6 +135,17 @@ class GpuStitcher:
         self.W, self.H = width, height
         if input_fmt not in ("yuv420p10le", "p010le", "cuda"):
             raise ValueError(f"unsupported input_fmt {input_fmt!r}")
+        # Sample range of the 10-bit planes, from the source's declared
+        # colour range: limited (BT.709 video levels, what the Osmo 360
+        # records: Y 64-940, C 64-960) or full (0-1023). The clamp in the
+        # pack and every black-level centring use these; a full-range source
+        # through the old fixed 64-940 clamp would have been crushed silently.
+        if yuv_range not in ("limited", "full"):
+            raise ValueError(f"yuv_range must be 'limited' or 'full', not {yuv_range!r}")
+        self.yuv_range = yuv_range
+        self.y_lo, self.y_hi, self.c_hi = ((64.0, 940.0, 960.0) if yuv_range == "limited"
+                                           else (0.0, 1023.0, 1023.0))
+        self._compile = compile
         # p010 input (NVDEC's native layout): samples top-aligned (value <<
         # 6, exact to undo in fp32) with interleaved chroma rows; _split_yuv
         # unpacks on-device, which is free next to a CPU swscale. "cuda" is
@@ -230,30 +242,36 @@ class GpuStitcher:
 
         self._grid_fused = None
         self._d3 = None          # (3, H*W) rays, built lazily for the fallback
-        try:
-            fn = torch.compile(_grid_math)
-            fn(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)   # compile now
-            self._grid_fused = fn
-        except Exception:                    # inductor unavailable: matmul path
-            pass
+        if compile:
+            try:
+                fn = torch.compile(_grid_math)
+                fn(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)   # compile now
+                self._grid_fused = fn
+            except Exception:                # inductor unavailable: matmul path
+                pass
+        else:
+            self._grid_fused = _grid_math    # eager, same math
 
         # p010 pack: fuse the clamp/scale/permute float math (the uint16 cast
         # can't be compiled - inductor's MPS backend lacks the dtype - so it
         # stays an eager kernel). 20 -> 10 ms at 8K, bit-identical.
+        y_lo, y_hi, c_hi = self.y_lo, self.y_hi, self.c_hi
+
         def _pack_math(Y, UV):
-            Yp = Y[0, 0].clamp(64, 940) * 64.0 + 0.5
+            Yp = Y[0, 0].clamp(y_lo, y_hi) * 64.0 + 0.5
             UVp = (UV[0].permute(1, 2, 0).reshape(UV.shape[2], -1)
-                   .clamp(64, 960) * 64.0 + 0.5)
+                   .clamp(y_lo, c_hi) * 64.0 + 0.5)
             return Yp, UVp
 
-        self._pack_fused = None
-        try:
-            pf = torch.compile(_pack_math)
-            pf(torch.zeros(1, 1, height, width, device=self.dev),
-               torch.zeros(1, 2, height // 2, width // 2, device=self.dev))
-            self._pack_fused = pf
-        except Exception:
-            self._pack_fused = _pack_math    # eager, same math
+        self._pack_fused = _pack_math        # eager, same math
+        if compile:
+            try:
+                pf = torch.compile(_pack_math)
+                pf(torch.zeros(1, 1, height, width, device=self.dev),
+                   torch.zeros(1, 2, height // 2, width // 2, device=self.dev))
+                self._pack_fused = pf
+            except Exception:
+                pass
         # Direct float->uint16 cast halves the device->host transfer vs the old
         # int32 route (37 -> 21 ms measured) and is bit-identical. Probe it:
         # torch's uint16 is "limited support" and not every backend casts.
@@ -400,7 +418,7 @@ class GpuStitcher:
         UVw = F.grid_sample(torch.cat([U, V], 1), gUV,
                             mode="bilinear", align_corners=True, padding_mode="zeros")
         if self.lsc_Y is not None:
-            Yw = (Yw - 64.0) * self.lsc_Y[i] + 64.0
+            Yw = (Yw - self.y_lo) * self.lsc_Y[i] + self.y_lo
             UVw = (UVw - 512.0) * self.lsc_UV[i] + 512.0
         return Yw, UVw
 
@@ -474,7 +492,7 @@ class GpuStitcher:
         ab = torch.cat([an4, bn4], 0).cpu().numpy()
         an, bn = ab[0, 0], ab[1, 0]
         lut, spatial = seam_luma_offsets(an, bn, self._sf_inner4,
-                                         lo=64.0, hi=940.0, n_lut=1024,
+                                         lo=self.y_lo, hi=self.y_hi, n_lut=1024,
                                          sigma=SEAM_OFFSET_SIGMA,
                                          agree_t=SEAM_OFFSET_AGREE_T)
         from .constants import SEAM_AUTO_PHOTO_T, SEAM_DYN_GATE_LO
@@ -592,10 +610,10 @@ class GpuStitcher:
         return gl, lit, den, a_s, b_s, (up(s0, full), up(s0, half),
                                         up(s1, full), up(s1, half))
 
-    @staticmethod
-    def _scale_centred(Y, UV, gY, gUV):
+    def _scale_centred(self, Y, UV, gY, gUV):
         """Apply a (broadcastable) gain to centred Y and UV planes."""
-        return (Y - 64.0) * gY + 64.0, (UV - 512.0) * gUV + 512.0
+        lo = self.y_lo
+        return (Y - lo) * gY + lo, (UV - 512.0) * gUV + 512.0
 
     def _expose_luma(self, Ya, UVa, Yb, UVb, max_gain=1.6):
         """Luma-only exposure: one scalar gain field per image (the default)."""
@@ -611,7 +629,8 @@ class GpuStitcher:
         YUV. The Y cross-terms need chroma at full res; that correction is tiny and
         smooth, so the half-res U/V are bilinear-upsampled just for it.
         """
-        y = Y - 64.0
+        lo = self.y_lo
+        y = Y - lo
         u = UV[:, 0:1] - 512.0
         v = UV[:, 1:2] - 512.0
         # Y's chroma cross-term is a single smooth channel; build it at half res
@@ -622,7 +641,7 @@ class GpuStitcher:
         yp = C[0, 0] * y + cross
         up = C[1, 0] * yh + C[1, 1] * u + C[1, 2] * v
         vp = C[2, 0] * yh + C[2, 1] * u + C[2, 2] * v
-        return yp * sf + 64.0, torch.cat([up * sh + 512.0, vp * sh + 512.0], 1)
+        return yp * sf + lo, torch.cat([up * sh + 512.0, vp * sh + 512.0], 1)
 
     def _expose_wb(self, Ya, UVa, Yb, UVb, max_gain=1.6):
         """Per-channel white-balance exposure (opt-in): luma spatial gain plus a
@@ -632,7 +651,7 @@ class GpuStitcher:
         UVa_s, UVb_s = F.avg_pool2d(UVa, 4), F.avg_pool2d(UVb, 4)   # UV half -> 1/8
 
         def to_rgb(Ys, UVs):
-            y, u, v = Ys - 64.0, UVs[:, 0:1] - 512.0, UVs[:, 1:2] - 512.0
+            y, u, v = Ys - self.y_lo, UVs[:, 0:1] - 512.0, UVs[:, 1:2] - 512.0
             return torch.cat([1.164384 * y + 1.792741 * v,
                               1.164384 * y - 0.213249 * u - 0.532909 * v,
                               1.164384 * y + 2.112402 * u], 1)

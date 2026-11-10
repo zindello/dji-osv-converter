@@ -126,6 +126,23 @@ class TestLevellingModes(unittest.TestCase):
             self.assertTrue(np.allclose(R @ R.T, np.eye(3), atol=1e-6), mode)
             self.assertGreater(np.linalg.det(R), 0.999, mode)
 
+    def test_hold_last_rotation_past_the_metadata_track(self):
+        # The metadata track can run a frame or two short of the video; the
+        # old K_PLAIN fallback snapped those frames to the raw layout.
+        from dji_osv_converter.metadata import OSVMeta
+        rng = np.random.default_rng(6)
+        quats = [q / np.linalg.norm(q) for q in rng.normal(size=(5, 4))]
+        meta = OSVMeta(None, None, np.array(quats), np.zeros((5, 3)))
+        for mode in ("rocksteady", "rocksteady_horizon"):
+            st = Stitcher360(calibs=[], meta=meta, levelling=mode)
+            last = st.levelling_for(4)
+            self.assertTrue(np.allclose(st.levelling_for(5), last), mode)
+            self.assertTrue(np.allclose(st.levelling_for(500), last), mode)
+            self.assertFalse(np.allclose(last, K_PLAIN), mode)
+        empty = OSVMeta(None, None, np.zeros((0, 4)), np.zeros((0, 3)))
+        st = Stitcher360(calibs=[], meta=empty, levelling="rocksteady_horizon")
+        self.assertTrue(np.allclose(st.levelling_for(0), K_PLAIN))
+
 
 if __name__ == "__main__":
     unittest.main()
