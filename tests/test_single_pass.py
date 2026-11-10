@@ -130,6 +130,72 @@ class TestSinglePass(unittest.TestCase):
         self.assertLessEqual(np.percentile(d, 99.9), 1.0)
         self.assertLessEqual(d.max(), 2.0)
 
+    def _interp_rms(self, lo_f, hi_f):
+        # The lens content is an analytic smooth function; the ideal output
+        # is that function evaluated at the exact (f64) sample positions.
+        R = rot_matrix(11.0, 7.0, 3.0)
+        cals = _rig.calibs()
+        kw = dict(out_w=W, out_h=H, source="quat", order="wxyz", max_fov_deg=DEFAULT_FOV_DEG,
+                  feather_deg=SEAM_OVERLAP_RATIO * 360.0 * FEATHER_FRACTION)
+        rng = np.random.default_rng(9)
+        yy, xx = np.mgrid[0:FH, 0:FW].astype(np.float64)
+        fn = lambda x, y, a, b: 300.0 + 500.0 * (0.5 + 0.5 * np.sin(a * x) * np.cos(b * y))
+        ideal, planes = [], []
+        for c in cals:
+            a, b = rng.uniform(lo_f, hi_f, 2)
+            p = np.full((FH * 3 // 2, FW), 512, np.uint16)
+            p[:FH] = np.round(fn(xx, yy, a, b))
+            planes.append(p)
+            m = build_map(c, R_extra=R, **kw)
+            ideal.append(np.where(m.valid, fn(m.map_x.astype(np.float64),
+                                              m.map_y.astype(np.float64), a, b), 0.0))
+        _, w_rot = _reference(planes[0], planes[1], R)
+        rms = {}
+        for interp in ("bilinear", "bicubic", "catmull"):
+            g = _stitcher(single_pass=True, lens_interp=interp)
+            Y, _ = g.stitch_yuv(planes[0], planes[1], R)
+            out = _lsb(Y)
+            errs = []
+            rows = np.arange(H)[:, None]
+            for i in (0, 1):
+                own = ((w_rot > 0.999) if i == 0 else (w_rot < 0.001)) & (ideal[i] > 0)
+                # near-axis rows only: at this 64 px rig the uv-map
+                # interpolation error at the rim (~0.06 px; 0.001 px at 8K)
+                # would swamp the interpolation difference under test
+                own &= ((rows > 1) & (rows < int(0.3 * H))) if i == 0 else \
+                       ((rows < H - 2) & (rows > int(0.7 * H)))
+                errs.append(np.abs(out - ideal[i])[own])
+            e = np.concatenate(errs)
+            rms[interp] = float(np.sqrt((e ** 2).mean()))
+        return rms
+
+    def test_catmull_rom_beats_bilinear_at_every_frequency(self):
+        for band, margin in (((0.06, 0.12), 1.0), ((0.12, 0.22), 0.8), ((0.25, 0.45), 0.8)):
+            # the smoothest band sits on the +-0.5 LSB quantisation floor of
+            # the integer planes, so only a strict win is asked of it there
+            rms = self._interp_rms(*band)
+            self.assertLess(rms["catmull"], rms["bilinear"] * margin, (band, rms))
+
+    def test_native_bicubic_is_a_sharpener_not_an_interpolator(self):
+        # torch's bicubic (a = -0.75, == cv2 INTER_CUBIC) wins on fine texture
+        # and LOSES to bilinear on smooth content - pinned so nobody "fixes"
+        # the default on the strength of the name.
+        fine = self._interp_rms(0.25, 0.45)
+        self.assertLess(fine["bicubic"], fine["bilinear"] * 0.9, fine)
+        smooth = self._interp_rms(0.06, 0.12)
+        self.assertGreater(smooth["bicubic"], smooth["bilinear"], smooth)
+        self.assertLess(smooth["bicubic"], 1.0)             # ... but sub-LSB
+
+    def test_bicubic_overshoot_is_clamped_to_range(self):
+        step = np.full((FH * 3 // 2, FW), 512, np.uint16)
+        step[:FH] = 64
+        step[:FH, FW // 2:] = 940
+        g = _stitcher(single_pass=True, lens_interp="bicubic")
+        Y, UV = g.stitch_yuv(step, step, rot_matrix(20.0, 10.0, 5.0))
+        self.assertGreaterEqual(int(Y.min()), 64 * 64)
+        self.assertLessEqual(int(Y.max()), 940 * 64)
+        self.assertLessEqual(int(UV.max()), 960 * 64)
+
     def test_seam_stack_is_band_limited(self):
         one = _stitcher(single_pass=True)
         Y_off, UV_off = one.stitch_yuv(self.f0, self.f1, np.eye(3), seam_flow=False)

@@ -67,6 +67,10 @@ def main() -> int:
     ap.add_argument("--single-pass", dest="single_pass", action="store_true",
                     help="sample each fisheye once per output pixel (levelling composed "
                          "into the lens maps) instead of warp-then-rotate")
+    ap.add_argument("--lens-interp", dest="lens_interp", default="bilinear",
+                    choices=("bilinear", "bicubic", "catmull"),
+                    help="luma lens sampling kernel (bicubic = torch a=-0.75, sharpening; "
+                         "catmull = Catmull-Rom, accurate, slow)")
     ap.add_argument("--enc-sessions", type=int, default=None,
                     help="parallel NVENC sessions (GOP-chunked; default: 3 on "
                          "CUDA+NVENC, else 1 - pass 1 to force a single session)")
@@ -87,7 +91,7 @@ def main() -> int:
                   exposure_wb=args.exposure_wb, lsc=args.lsc,
                   levelling=args.levelling, hardware=args.hardware, gpu=args.gpu,
                   pipeline=args.pipeline, enc_sessions=args.enc_sessions,
-                  single_pass=args.single_pass,
+                  single_pass=args.single_pass, lens_interp=args.lens_interp,
                   spherical=True, progress=progress)
     dt = time.time() - t
     print(f"\nwrote {out} in {dt:.1f}s")

@@ -127,16 +127,30 @@ class GpuStitcher:
                  lsc_gain: list[np.ndarray] | None = None,
                  rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840),
                  input_fmt: str = "yuv420p10le", yuv_range: str = "limited",
-                 compile: bool = True, single_pass: bool = False):
+                 compile: bool = True, single_pass: bool = False,
+                 lens_interp: str = "bilinear"):
         """
         ``single_pass``: compose the per-frame levelling with the static lens
         maps so each output pixel samples its fisheye ONCE (see
-        :meth:`_stitch_single_pass`).
+        :meth:`_stitch_single_pass`). ``lens_interp`` for the luma lens
+        sample (chroma stays bilinear): ``"bilinear"``; ``"bicubic"`` -
+        torch's native cubic convolution, a = -0.75 (the OpenCV INTER_CUBIC
+        kernel): NOT a more accurate interpolator but a mildly sharpening
+        one - it beats bilinear on fine texture (period <~ 12 px) and is
+        slightly LESS accurate on smooth content (sub-LSB), with overshoot
+        at hard edges (clamped by the pack); ``"catmull"`` - Catmull-Rom,
+        a = -0.5, the third-order-accurate cubic (beats bilinear everywhere,
+        no sharpening character), built from 9 bilinear fetches so it costs
+        ~9x a bilinear warp - an option for quality renders, not the
+        unattended default.
         """
         if torch is None:
             raise RuntimeError("torch is not installed")
+        if lens_interp not in ("bilinear", "bicubic", "catmull"):
+            raise ValueError("lens_interp must be 'bilinear', 'bicubic' or 'catmull', "
+                             f"not {lens_interp!r}")
         self.single_pass = bool(single_pass)
-        self.lens_interp = "bilinear"
+        self.lens_interp = lens_interp
         self._sp = None               # single-pass statics, built on first use
         self._cams = cams
         # Diagnostics of the last stitch's seam band (10-bit units): the
@@ -416,6 +430,50 @@ class GpuStitcher:
                              align_corners=False).permute(0, 2, 3, 1)
         return self.grid[i] + sh_f, self.grid_half[i] + sh_h
 
+    def _sample_luma(self, img, grid):
+        """Sample a (1,1,h,w) plane at a normalised grid per ``lens_interp``."""
+        if self.lens_interp == "catmull":
+            return self._sample_catmull(img, grid)
+        return F.grid_sample(img, grid, mode=self.lens_interp, align_corners=True,
+                             padding_mode="zeros")
+
+    @staticmethod
+    def _sample_catmull(img, grid):
+        """Catmull-Rom (a = -0.5) cubic sampling via 9 bilinear fetches.
+
+        Per axis the four cubic taps collapse to three bilinear ones: the
+        two inner taps (weights w1, w2, both >= 0 and summing to >= 1) are
+        one bilinear fetch at fraction w2/(w1+w2), the outer taps (w0, w3
+        <= 0) are fetched on their own. 3 x 3 fetches reproduce the exact
+        16-tap kernel. align_corners=True, zeros outside the plane.
+        """
+        _, _, h, w = img.shape
+
+        def taps(p, n):
+            i = torch.floor(p)
+            t = p - i
+            t2, t3 = t * t, t * t * t
+            w0 = -0.5 * t3 + t2 - 0.5 * t
+            w1 = 1.5 * t3 - 2.5 * t2 + 1.0
+            w2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t
+            w3 = 0.5 * t3 - 0.5 * t2
+            w12 = w1 + w2
+            scale = 2.0 / (n - 1)
+            pos = [(i - 1.0) * scale - 1.0, (i + w2 / w12) * scale - 1.0,
+                   (i + 2.0) * scale - 1.0]
+            return pos, [w0, w12, w3]
+
+        xs, wx = taps((grid[..., 0] + 1.0) * (0.5 * (w - 1)), w)
+        ys, wy = taps((grid[..., 1] + 1.0) * (0.5 * (h - 1)), h)
+        out = None
+        for a in range(3):
+            for b in range(3):
+                g = torch.stack([xs[a], ys[b]], -1)
+                s = F.grid_sample(img, g, mode="bilinear", align_corners=True,
+                                  padding_mode="zeros") * (wx[a] * wy[b]).unsqueeze(1)
+                out = s if out is None else out + s
+        return out
+
     def _warp_planes(self, packed: np.ndarray, i: int, rs=None):
         """Warp one fisheye's YUV -> (Yw (1,1,H,W), UVw (1,2,H/2,W/2)).
 
@@ -427,8 +485,7 @@ class GpuStitcher:
         gY, gUV = self.grid[i], self.grid_half[i]
         if rs is not None and self.rs_tau is not None:
             gY, gUV = self._rs_grids(i, *rs)
-        Yw = F.grid_sample(Y, gY, mode="bilinear",
-                           align_corners=True, padding_mode="zeros")
+        Yw = self._sample_luma(Y, gY)
         UVw = F.grid_sample(torch.cat([U, V], 1), gUV,
                             mode="bilinear", align_corners=True, padding_mode="zeros")
         if self.lsc_Y is not None:
@@ -702,8 +759,7 @@ class GpuStitcher:
                            padding_mode="border")                   # (1,2,H,W) lens px
         gl = torch.stack([uv[:, 0] * (2.0 / (fw - 1)) - 1.0,
                           uv[:, 1] * (2.0 / (fh - 1)) - 1.0], -1)
-        Ys = F.grid_sample(Y, gl, mode="bilinear", align_corners=True,
-                           padding_mode="zeros")
+        Ys = self._sample_luma(Y, gl)
         uvh = F.grid_sample(sp["uv"][i], gh, mode="bilinear", align_corners=True,
                             padding_mode="border")
         # 4:2:0 chroma, MPEG-2 "left" siting: chroma sample (i, j) sits at

@@ -157,7 +157,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             pipeline: bool | None = None, enc_sessions: int | None = None,
             allow_software: bool = False, enc_options: dict | None = None,
             colour_tags: bool = True, enc_inflight_frames: int | None = None,
-            single_pass: bool = False,
+            single_pass: bool = False, lens_interp: str = "bilinear",
             progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
@@ -214,7 +214,10 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     ``single_pass`` (GPU path): compose the levelling with the lens maps so
     every output pixel is interpolated once instead of twice (sharper, no
     pole singularity at the front/back centres, exact wrap column); the
-    seam stack still runs, on band-only warps.
+    seam stack still runs, on band-only warps. ``lens_interp``: "bilinear"
+    (default), "bicubic" (torch's a=-0.75 kernel: sharpening character) or
+    "catmull" (Catmull-Rom, accurate, ~9x the warp cost) - see
+    :class:`~dji_osv_converter.stitch_gpu.GpuStitcher`.
 
     The output is always muxed as MP4 regardless of the path's extension
     (temporary names such as ``out.mp4.partial`` are fine).
@@ -258,7 +261,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             rs_tables=stitcher.rs_tables() if use_rs else None,
             fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
             input_fmt=gpu_fmt, yuv_range=yuv_range,
-            single_pass=single_pass)
+            single_pass=single_pass, lens_interp=lens_interp)
     fps = Fraction(vid.average_rate).limit_denominator(90000)
     total = vid.frames or 0
     n_frames = count if count is not None else (total - start if total else None)
