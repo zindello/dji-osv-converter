@@ -15,3 +15,6 @@ osv_example/
 outputs/
 output/
 artifacts/
+
+# A/B comparison output (renders, crops, metrics): footage-derived, never committed
+ab_out/
