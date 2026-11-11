@@ -17,6 +17,16 @@ repair off. Per-platform table in
 [`docs/benchmarks.md`](docs/benchmarks.md), measured by
 `tools/benchmark.py`.
 
+**Options worth knowing** (all off by default, see
+[`IMPROVEMENTS.md`](IMPROVEMENTS.md) for measurements): `--single-pass`
+samples each fisheye once per output pixel (sharper, exact wrap column);
+`--lens-interp bicubic|catmull` changes the luma sampling kernel (bicubic
+is a sharpening kernel, Catmull-Rom the accurate one); `Converter(...)`
+converts many files in one process with the setup paid once;
+`convert(compile_cache_dir=...)` persists the torch.compile cache. The
+360 tag is injected with O(moov) memory. `tools/ab_compare.py` renders an
+offline A/B viewer of every variant.
+
 **Documentation: [`docs/`](docs/index.md)** — quick start, the
 reverse-engineered OSV format reference, the levelling/stabilisation math and
 its validation against DJI, architecture & performance, and a generated API

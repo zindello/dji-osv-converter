@@ -66,6 +66,16 @@ Facts that repeatedly mattered (full detail in docs/):
 - Quality achieved (worst-case clip): rendered jitter 0.027 calm / 0.071
   moving °/frame vs DJI 0.046 / 0.118; horizon lock holds yaw tighter than
   DJI under violent motion.
+- **Resampling** (`IMPROVEMENTS.md`): the two-pass stitch interpolates
+  twice and its level pass had a (W−1)/W stretch; `single_pass=True`
+  fixes both (off by default: dearer on MPS, expected free on the V100).
+  torch's `bicubic` is a = −0.75 — a sharpening kernel, NOT a more
+  accurate one; Catmull-Rom (`catmull`) is the accurate cubic. A residual
+  common-mode vignette was measured as absent (sky, elevation-controlled,
+  7 clips): the partial LSC (`lsc=<alpha>`) stays 0.
+- `inject_spherical` streams (O(moov) memory); the output is always muxed
+  as MP4 whatever the path's extension; colour tags are carried from the
+  source; `codec=None` never falls back to a software encoder silently.
 
 ## Fresh-clone setup
 

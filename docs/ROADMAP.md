@@ -28,7 +28,17 @@ for the recorded modes and validated on worst-case footage:
    ~65 ms of CPU on the stitch thread; it already rides
    `stitch_yuv_async`, so moving flow/DP/estimator into the V100
    pipeline's builder stage recovers its throughput. Re-measure both
-   benchmark rows under merged defaults afterwards.
+   benchmark rows under merged defaults afterwards. Measured per
+   component on an M3 (`IMPROVEMENTS.md` §8): DIS pair 11.2 ms (now
+   two-threaded: ~6), seam DP 9.8, estimator 4.6, gate 2.2, grays 1.3 —
+   ~29 ms, i.e. ~65 ms on the Ivy Bridge host, above the 36 ms NVDEC
+   wall; the builder-stage move (or a cheaper estimator at 1/8 pooling)
+   is what recovers it.
+1c. **Single-pass resample on the V100** (`single_pass=True`,
+   `IMPROVEMENTS.md` §2): measure its per-frame cost under the NVDEC wall
+   and the DJI comparison on that render; if it stays hidden, make it the
+   default there. The analytic-uv fused kernel (no map gathers) is the
+   next step if it does not.
 2. **Beyond the NVDEC wall** — segment-parallel NVENC landed
    (`enc_sessions`, 310.9 → 200.7 s on the full base clip) and the V100
    now runs its single decode engine at 94-100%. Device-frame NVENC

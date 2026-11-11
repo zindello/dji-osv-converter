@@ -36,7 +36,7 @@ Stitcher360.levelling_for ──► │  per-frame rotation R (per mode)
                               ▼
              hevc_videotoolbox encode (hvc1, 0.25 bpp) + audio copy
                               ▼
-             spherical.inject_spherical  (sv3d + V1 uuid boxes)
+             spherical.inject_spherical  (sv3d + V1 uuid boxes; streams only the moov)
 ```
 
 The whole stitch stays 10-bit YUV on the GPU; the only transfers are one
@@ -183,6 +183,42 @@ Notable implementation facts:
   libx265, with the packed→planar repack handled losslessly for software
   encoders (libx265 muxes as `hev1`, cosmetic: QuickLook-only issue, and macOS
   gets VideoToolbox anyway).
+
+## Single-pass resample (`single_pass=True`)
+
+The default stitch is two-pass: warp both lenses into the rig equirect,
+blend, rotate the pano by the per-frame `R` with a second `grid_sample`.
+That interpolates every output pixel twice, puts the `asin` singularity of
+the second pass on the lens axes (the output's front/back centres), and —
+a bug found in review — samples the pano with a (W−1)/W stretch
+(`align_corners=True` maps ±1 onto the edge pixel *centres*, but the
+pano's pixel for a longitude is `lon/2π·W`) with the wrap column clamped.
+
+`GpuStitcher(single_pass=True)` pads the static uv maps and seam weights
+to `(H+1, W+1)` (wrapped column, extrapolated pole row) so the unchanged
+level grid indexes them exactly, samples each lens's uv map at the level
+grid and the fisheye once at that uv. The seam stack keeps its semantics:
+the band rows are warped into rig space for the detectors, and the fields
+it produces are gathered only at the in-band output pixels (sparse). It
+costs extra gathers — +47 ms static / +140 ms with the seam stack on the
+M3 (whose GPU one 8K frame saturates); on the V100 the estimate is
++8–15 ms, under the NVDEC wall (to be measured). `lens_interp` selects
+the luma sampling kernel: `bicubic` is torch's a = −0.75 cubic
+(≡ cv2 `INTER_CUBIC`), a mildly *sharpening* kernel — more accurate than
+bilinear on fine texture, less on smooth content (sub-LSB), free on the
+GPU; `catmull` is the accurate Catmull-Rom cubic built from 9 bilinear
+fetches (quality renders only). Numbers: `IMPROVEMENTS.md`.
+
+## Setup amortisation
+
+The rig geometry (maps + seam weights) is cached process-wide by a hash of
+the calibration and output geometry (`pipeline.geometry_key`); the
+`GpuStitcher` is kept across `convert()` calls while geometry and options
+match; `convert(compile_cache_dir=)` / `set_compile_cache_dir()` points
+inductor's and Triton's on-disk caches at persistent storage so the
+`torch.compile` cost is paid once per *image*, not per process.
+`Converter` wraps this for batch use. Second file from the same unit:
+13.4 s → 1.2 s setup on the M3.
 
 ## CPU reference path
 

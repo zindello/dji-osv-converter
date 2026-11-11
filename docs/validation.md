@@ -28,7 +28,10 @@ final gate is always a human watching the render.
 
 - `tools/validate_against_dji.py` — geometry/structure scoring vs a DJI
   export (yaw- and tone-compensated).
-- `tools/ab_seam.py` — renders seam A/B images with an amplified diff.
+- `tools/ab_compare.py` — renders every stitch variant of a set of test
+  windows (full frame + 1:1 crops + amplified diffs + metrics) into an
+  offline viewer, `ab_out/index.html` (replaces the old `ab_seam.py`).
+  `validate_against_dji.py --gpu` scores the GPU variants.
 - `tools/compare.html`, `tools/view360.html` — interactive slider / 360°
   in-browser comparison pages.
 - `tests/test_pipeline.py` — the mathematical properties each mode was
