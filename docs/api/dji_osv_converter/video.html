@@ -33,6 +33,33 @@
             <li>
                     <a class="function" href="#convert">convert</a>
             </li>
+            <li>
+                    <a class="class" href="#Converter">Converter</a>
+                            <ul class="memberlist">
+                        <li>
+                                <a class="function" href="#Converter.__init__">Converter</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#Converter.defaults">defaults</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#Converter.convert">convert</a>
+                        </li>
+                        <li>
+                                <a class="function" href="#Converter.close">close</a>
+                        </li>
+                </ul>
+
+            </li>
+            <li>
+                    <a class="function" href="#encoder_options">encoder_options</a>
+            </li>
+            <li>
+                    <a class="function" href="#set_compile_cache_dir">set_compile_cache_dir</a>
+            </li>
+            <li>
+                    <a class="function" href="#clear_gpu_cache">clear_gpu_cache</a>
+            </li>
     </ul>
 
 
@@ -73,7 +100,7 @@ convert("CAM_....OSV", "out.mp4", count=300)     # first 300 frames
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">convert</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">input_osv</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span>,</span><span class="param">	<span class="n">output_mp4</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span>,</span><span class="param">	<span class="o">*</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">7680</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3840</span>,</span><span class="param">	<span class="n">start</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>,</span><span class="param">	<span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">codec</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">bit10</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">bitrate</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">hardware</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">multiband</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">exposure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">exposure_wb</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">levelling</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'plain'</span>,</span><span class="param">	<span class="n">lsc</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">seam_flow</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'auto'</span>,</span><span class="param">	<span class="n">audio</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">spherical</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">gpu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">pipeline</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">enc_sessions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">progress</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">) -> <span class="nb">str</span>:</span></span>
+        <span class="name">convert</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">input_osv</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span>,</span><span class="param">	<span class="n">output_mp4</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span>,</span><span class="param">	<span class="o">*</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">7680</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3840</span>,</span><span class="param">	<span class="n">start</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>,</span><span class="param">	<span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">codec</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">bit10</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">bitrate</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">bpp</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">hardware</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">multiband</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">exposure</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">exposure_wb</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">levelling</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'plain'</span>,</span><span class="param">	<span class="n">lsc</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="nb">float</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">seam_flow</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'auto'</span>,</span><span class="param">	<span class="n">audio</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">spherical</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">gpu</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">pipeline</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">enc_sessions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">allow_software</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">enc_options</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">colour_tags</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">enc_inflight_frames</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">single_pass</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">lens_interp</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'bilinear'</span>,</span><span class="param">	<span class="n">seam_engine</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">seam_morph</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'legacy'</span>,</span><span class="param">	<span class="n">reuse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">compile_cache_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">profile</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">progress</span><span class="o">=</span><span class="kc">None</span></span><span class="return-annotation">) -> <span class="nb">str</span>:</span></span>
 
         
     </div>
@@ -118,6 +145,200 @@ independent sessions and re-serializes the closed-GOP bitstreams at mux
 (B-frames forced off so dts stays monotonic across seams). Auto reads the
 card's engine count from <code>constants.GPU_ENGINES</code> (unknown cards: 1);
 any count still produces correct output (sessions timeslice the engine).</p>
+
+<p><code>allow_software</code>: with <code>codec=None</code> only hardware encoders are
+auto-selected; a box without one raises instead of silently encoding 8K
+on the CPU. <code>enc_options</code> are libav encoder options (see
+<code><a href="#encoder_options">encoder_options()</a></code>); <code>bpp</code> overrides <code>constants.BITRATE_BPP</code> for
+the rate-driven hardware encoders (<code>bitrate</code> wins if both are given).
+<code>colour_tags</code> copies the source's colour range/primaries/transfer/matrix
+onto the output (default on; False restores the untagged output). The
+stitch clamps to the source's declared range (limited by default, full
+when the source says so). <code>enc_inflight_frames</code> caps the 8K frames held
+across the encoder-session queues (None = one chunk + 2 x the stage
+queue, ~6 GB at 8K p010 - the old bound was per session, i.e. 3x that).</p>
+
+<p><code>lsc</code> may also be a float alpha in (0, 1]: a PARTIAL lens-shading
+correction, the factory curve raised to <code>alpha</code> (<code>True</code> = 1.0, the
+full curve, which double-corrects ISP footage). The justified default is
+0 (off); see IMPROVEMENTS.md for the measured residual falloff.</p>
+
+<p><code>single_pass</code> (GPU path): compose the levelling with the lens maps so
+every output pixel is interpolated once instead of twice (sharper, no
+pole singularity at the front/back centres, exact wrap column); the
+seam stack still runs, on band-only warps. <code>lens_interp</code>: "bilinear"
+(default), "bicubic" (torch's a=-0.75 kernel: sharpening character) or
+"catmull" (Catmull-Rom, accurate, ~9x the warp cost) - see
+<code>~<a href="stitch_gpu.html#GpuStitcher">dji_osv_converter.stitch_gpu.GpuStitcher</a></code>.</p>
+
+<p><code>seam_engine</code> (single-pass GPU path): where the seam stack runs.
+"gpu" does all of it on the device and folds the result into the
+sampling maps, so the stitch thread never waits on the GPU and no
+OpenCV runs per frame; "cpu" is the earlier path (numpy + OpenCV on the
+stitch thread, two device syncs per frame). None (default) picks "gpu"
+on CUDA and MPS. The two differ only inside the seam band, and only by
+the optical flow (Lucas-Kanade on the device against OpenCV's DIS) -
+see PERFORMANCE.md. <code>seam_morph</code>: "legacy" (default) is the band
+morph as shipped; "corrected" swaps the two flows so each lens is
+moved TOWARDS the other, which is what the morph was meant to do and
+measurably lowers the band mismatch - it changes the look of the seam
+on parallax frames, so it is opt-in (PERFORMANCE.md, "The morph
+direction").</p>
+
+<p><code>reuse</code> (default on) keeps the built rig geometry and the GpuStitcher
+alive across calls in this process, so converting many files from the
+same camera pays the setup once (<code><a href="#Converter">Converter</a></code> wraps this);
+<code>compile_cache_dir</code> persists torch.compile's caches across processes
+(see <code><a href="#set_compile_cache_dir">set_compile_cache_dir()</a></code>).</p>
+
+<p><code>profile</code> (default on): per-stage timing, logged at the end of the
+conversion as one <code>osv-profile: {json}</code> line plus an <code>osv-mem:
+{json}</code> line with the peak resident and GPU memory (see
+<code>~<a href="profile.html">dji_osv_converter.profile</a></code>; also returned by
+<code>profile.last_profile()</code>). It costs a few microseconds per stage and
+adds no device sync. <code>"print"</code> also prints both lines to stdout;
+<code>"sync"</code> synchronises the device at every GPU stage boundary for
+exact attribution (a diagnostic: it serialises the pipeline); False
+turns it off. Only one conversion per process is profiled at a time.</p>
+
+<p>The output is always muxed as MP4 regardless of the path's extension
+(temporary names such as <code>out.mp4.partial</code> are fine).</p>
+</div>
+
+
+                </section>
+                <section id="Converter">
+                    <div class="attr class">
+            
+    <span class="def">class</span>
+    <span class="name">Converter</span>:
+
+        
+    </div>
+    <a class="headerlink" href="#Converter"></a>
+    
+            <div class="docstring"><p>Convert many files in one long-lived process with the setup paid once.</p>
+
+<pre><code>conv = Converter(levelling="rocksteady_horizon", compile_cache_dir="/offcuts/cache")
+for src, dst in jobs:
+    conv.convert(src, dst)
+</code></pre>
+
+<p>Any <code><a href="#Converter.convert">convert()</a></code> keyword can be given here as a default and
+overridden per call. The rig geometry and the GPU stitcher are reused
+while the camera calibration and stitch options stay the same (a change
+rebuilds them transparently). <code><a href="#Converter.close">close()</a></code> drops the caches.</p>
+</div>
+
+
+                            <div id="Converter.__init__" class="classattr">
+                                <div class="attr function">
+            
+        <span class="name">Converter</span><span class="signature pdoc-code condensed">(<span class="param"><span class="o">**</span><span class="n">defaults</span></span>)</span>
+
+        
+    </div>
+    <a class="headerlink" href="#Converter.__init__"></a>
+    
+    
+
+                            </div>
+                            <div id="Converter.defaults" class="classattr">
+                                <div class="attr variable">
+            <span class="name">defaults</span>
+
+        
+    </div>
+    <a class="headerlink" href="#Converter.defaults"></a>
+    
+    
+
+                            </div>
+                            <div id="Converter.convert" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">convert</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span>, </span><span class="param"><span class="n">input_osv</span>, </span><span class="param"><span class="n">output_mp4</span>, </span><span class="param"><span class="o">**</span><span class="n">overrides</span></span><span class="return-annotation">) -> <span class="nb">str</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#Converter.convert"></a>
+    
+    
+
+                            </div>
+                            <div id="Converter.close" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">close</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span></span><span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#Converter.close"></a>
+    
+    
+
+                            </div>
+                </section>
+                <section id="encoder_options">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">encoder_options</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">codec</span><span class="p">:</span> <span class="nb">str</span>,</span><span class="param">	<span class="o">*</span>,</span><span class="param">	<span class="n">preset</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">tune</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">aq</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lookahead</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">multipass</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rc</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">extra</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="nb">dict</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#encoder_options"></a>
+    
+            <div class="docstring"><p>libav private options for the video encoder. <code>None</code> = libav default.</p>
+
+<p>Everything here changes the encoder only, never the stitched frames.
+For NVENC: <code>preset</code> p1..p7 (p7 slowest/best), <code>tune</code> hq/ll/ull,
+<code>aq</code> enables spatial + temporal adaptive quantisation, <code>lookahead</code>
+sets <code>rc-lookahead</code> frames, <code>multipass</code> disabled/qres/fullres,
+<code>rc</code> vbr/cbr/constqp. Which of these pay at 0.25 bpp on an 8K
+panorama can only be measured on the NVIDIA box (see IMPROVEMENTS.md
+for the exact test); the defaults are unchanged until then.
+For software/VideoToolbox encoders only <code>extra</code> applies.</p>
+</div>
+
+
+                </section>
+                <section id="set_compile_cache_dir">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">set_compile_cache_dir</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span> <span class="o">|</span> <span class="kc">None</span></span><span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#set_compile_cache_dir"></a>
+    
+            <div class="docstring"><p>Point torch.compile's on-disk caches at a persistent directory.</p>
+
+<p>The level-grid and pack kernels are torch.compile'd per process (~28 s
+on the V100, ~3 s on an M3). Inductor's FX-graph cache and Triton's
+kernel cache make a warm start a second or two - but they live under
+the temp dir by default, which a container loses on restart. Call this
+BEFORE the first compile (inductor pins the directory on first use);
+an existing TORCHINDUCTOR_CACHE_DIR / TRITON_CACHE_DIR in the
+environment is honoured and never overridden by a None here.</p>
+</div>
+
+
+                </section>
+                <section id="clear_gpu_cache">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">clear_gpu_cache</span><span class="signature pdoc-code condensed">(<span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#clear_gpu_cache"></a>
+    
+            <div class="docstring"><p>Drop the cached GpuStitcher (frees its device memory).</p>
 </div>
 
 

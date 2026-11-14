@@ -43,7 +43,22 @@
                                 <a class="function" href="#GpuStitcher.__init__">GpuStitcher</a>
                         </li>
                         <li>
+                                <a class="variable" href="#GpuStitcher.seam_morph">seam_morph</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.single_pass">single_pass</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.lens_interp">lens_interp</a>
+                        </li>
+                        <li>
                                 <a class="variable" href="#GpuStitcher.dev">dev</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.seam_engine">seam_engine</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.yuv_range">yuv_range</a>
                         </li>
                         <li>
                                 <a class="variable" href="#GpuStitcher.input_p010">input_p010</a>
@@ -68,6 +83,9 @@
                         </li>
                         <li>
                                 <a class="variable" href="#GpuStitcher.w3h">w3h</a>
+                        </li>
+                        <li>
+                                <a class="variable" href="#GpuStitcher.seam_stats">seam_stats</a>
                         </li>
                         <li>
                                 <a class="function" href="#GpuStitcher.level">level</a>
@@ -171,11 +189,73 @@ device changes. Construct only when <code><a href="#available">available()</a></
                             <div id="GpuStitcher.__init__" class="classattr">
                                 <div class="attr function">
             
-        <span class="name">GpuStitcher</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">band_px</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lsc_gain</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rs_tables</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">fisheye_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span>,</span><span class="param">	<span class="n">input_fmt</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'yuv420p10le'</span></span>)</span>
+        <span class="name">GpuStitcher</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cams</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">band_px</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">lsc_gain</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">rs_tables</span><span class="o">=</span><span class="kc">None</span>,</span><span class="param">	<span class="n">fisheye_size</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3840</span><span class="p">,</span> <span class="mi">3840</span><span class="p">)</span>,</span><span class="param">	<span class="n">input_fmt</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'yuv420p10le'</span>,</span><span class="param">	<span class="n">yuv_range</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'limited'</span>,</span><span class="param">	<span class="nb">compile</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>,</span><span class="param">	<span class="n">single_pass</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>,</span><span class="param">	<span class="n">lens_interp</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'bilinear'</span>,</span><span class="param">	<span class="n">seam_engine</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>,</span><span class="param">	<span class="n">seam_morph</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">'legacy'</span></span>)</span>
 
         
     </div>
     <a class="headerlink" href="#GpuStitcher.__init__"></a>
+    
+            <div class="docstring"><p><code><a href="#GpuStitcher.single_pass">single_pass</a></code>: compose the per-frame levelling with the static lens
+maps so each output pixel samples its fisheye ONCE (see
+<code>_stitch_single_pass()</code>). <code><a href="#GpuStitcher.lens_interp">lens_interp</a></code> for the luma lens
+sample (chroma stays bilinear): <code>"bilinear"</code>; <code>"bicubic"</code> -
+torch's native cubic convolution, a = -0.75 (the OpenCV INTER_CUBIC
+kernel): NOT a more accurate interpolator but a mildly sharpening
+one - it beats bilinear on fine texture (period &lt;~ 12 px) and is
+slightly LESS accurate on smooth content (sub-LSB), with overshoot
+at hard edges (clamped by the pack); <code>"catmull"</code> - Catmull-Rom,
+a = -0.5, the third-order-accurate cubic (beats bilinear everywhere,
+no sharpening character), built from 9 bilinear fetches so it costs
+~9x a bilinear warp - an option for quality renders, not the
+unattended default.</p>
+
+<p><code><a href="#GpuStitcher.seam_engine">seam_engine</a></code> (single-pass stitch): where the seam stack runs.
+<code>"cpu"</code> - the reference path: OpenCV on the host (two device->host
+syncs a frame, the GPU idle meanwhile), fields applied sparsely.
+<code>"gpu"</code> - the whole stack on the device with no host sync
+(<code>seam_gpu</code>), fields folded into the lens maps' band rows.
+None picks per device (<code>default_seam_engine()</code>).</p>
+
+<p><code><a href="#GpuStitcher.seam_morph">seam_morph</a></code>: which flow moves which lens in the band morph.
+<code>"legacy"</code> (the default: the shipped behaviour) samples lens A at
+<code>p + t0 * f_ab</code> and lens B at <code>p + t1 * f_ba</code>. With
+<code>a(p) ~ b(p + f_ab(p))</code> that moves each lens AWAY from the other
+(measured: it raises the band mismatch on every test window, see
+PERFORMANCE.md); <code>"corrected"</code> swaps the two flows so the lenses
+meet. Kept opt-in because it changes the look of the output.</p>
+</div>
+
+
+                            </div>
+                            <div id="GpuStitcher.seam_morph" class="classattr">
+                                <div class="attr variable">
+            <span class="name">seam_morph</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.seam_morph"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.single_pass" class="classattr">
+                                <div class="attr variable">
+            <span class="name">single_pass</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.single_pass"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.lens_interp" class="classattr">
+                                <div class="attr variable">
+            <span class="name">lens_interp</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.lens_interp"></a>
     
     
 
@@ -187,6 +267,28 @@ device changes. Construct only when <code><a href="#available">available()</a></
         
     </div>
     <a class="headerlink" href="#GpuStitcher.dev"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.seam_engine" class="classattr">
+                                <div class="attr variable">
+            <span class="name">seam_engine</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.seam_engine"></a>
+    
+    
+
+                            </div>
+                            <div id="GpuStitcher.yuv_range" class="classattr">
+                                <div class="attr variable">
+            <span class="name">yuv_range</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.yuv_range"></a>
     
     
 
@@ -277,6 +379,22 @@ device changes. Construct only when <code><a href="#available">available()</a></
     <a class="headerlink" href="#GpuStitcher.w3h"></a>
     
     
+
+                            </div>
+                            <div id="GpuStitcher.seam_stats" class="classattr">
+                                <div class="attr variable">
+            <span class="name">seam_stats</span><span class="annotation">: dict | None</span>
+
+        
+    </div>
+    <a class="headerlink" href="#GpuStitcher.seam_stats"></a>
+    
+            <div class="docstring"><p>Diagnostics of the last stitch's seam band (see <code><a href="#GpuStitcher.__init__">__init__</a></code>).</p>
+
+<p>The device engine leaves them as device scalars so the stitch never
+waits on the GPU; reading this property fetches them (one sync).</p>
+</div>
+
 
                             </div>
                             <div id="GpuStitcher.level" class="classattr">

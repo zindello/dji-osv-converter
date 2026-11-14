@@ -73,6 +73,9 @@
                                 <a class="function" href="#Stitcher360.maps_for">maps_for</a>
                         </li>
                         <li>
+                                <a class="function" href="#Stitcher360.geometry_key">geometry_key</a>
+                        </li>
+                        <li>
                                 <a class="function" href="#Stitcher360.lsc_gains">lsc_gains</a>
                         </li>
                         <li>
@@ -110,6 +113,12 @@
             </li>
             <li>
                     <a class="function" href="#lsc_gain_map">lsc_gain_map</a>
+            </li>
+            <li>
+                    <a class="function" href="#geometry_key">geometry_key</a>
+            </li>
+            <li>
+                    <a class="function" href="#clear_geometry_cache">clear_geometry_cache</a>
             </li>
     </ul>
 
@@ -347,11 +356,26 @@ compatibility but does not affect the maps.</p>
 
 
                             </div>
+                            <div id="Stitcher360.geometry_key" class="classattr">
+                                <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">geometry_key</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span></span><span class="return-annotation">) -> <span class="nb">str</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#Stitcher360.geometry_key"></a>
+    
+            <div class="docstring"><p>Hash of the static geometry (see <code><a href="#Stitcher360.geometry_key">geometry_key()</a></code>).</p>
+</div>
+
+
+                            </div>
                             <div id="Stitcher360.lsc_gains" class="classattr">
                                 <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">lsc_gains</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span></span><span class="return-annotation">) -> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
+        <span class="name">lsc_gains</span><span class="signature pdoc-code condensed">(<span class="param"><span class="bp">self</span>, </span><span class="param"><span class="n">alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span></span><span class="return-annotation">) -> <span class="nb">list</span><span class="p">[</span><span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
 
         
     </div>
@@ -359,7 +383,8 @@ compatibility but does not affect the maps.</p>
     
             <div class="docstring"><p>Per-lens devignetting gain maps (equirect), or None if no LSC data.</p>
 
-<p>See <code><a href="#lsc_gain_map">lsc_gain_map()</a></code> for why this is OFF by default.</p>
+<p><code>alpha</code> scales the factory curve (see <code><a href="#lsc_gain_map">lsc_gain_map()</a></code>); the
+full curve is OFF by default in convert().</p>
 </div>
 
 
@@ -563,7 +588,7 @@ low-pass that removes shake while keeping the tumble.</p>
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">lsc_gain_map</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cam_map</span><span class="p">:</span> <span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span>,</span><span class="param">	<span class="n">calib</span><span class="p">:</span> <span class="n"><a href="osv_calibration.html#CameraCalib">dji_osv_converter.osv_calibration.CameraCalib</a></span>,</span><span class="param">	<span class="n">gamma</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.2</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
+        <span class="name">lsc_gain_map</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">cam_map</span><span class="p">:</span> <span class="n"><a href="calibration.html#CameraMap">dji_osv_converter.calibration.CameraMap</a></span>,</span><span class="param">	<span class="n">calib</span><span class="p">:</span> <span class="n"><a href="osv_calibration.html#CameraCalib">dji_osv_converter.osv_calibration.CameraCalib</a></span>,</span><span class="param">	<span class="n">gamma</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.2</span>,</span><span class="param">	<span class="n">alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span></span><span class="return-annotation">) -> <span class="n">numpy</span><span class="o">.</span><span class="n">ndarray</span> <span class="o">|</span> <span class="kc">None</span>:</span></span>
 
         
     </div>
@@ -573,13 +598,52 @@ low-pass that removes shake while keeping the tumble.</p>
 
 <p>Inverts the f-theta radial map to recover the undistorted radius the factory
 curve (calibration fields 22/23) is authored in, looks up V, and returns
-<code>(1/V)^(1/gamma)</code> matching <code>cam_map</code>. <code>gamma</code> is the file's encoding
-transfer (see <code><a href="#transfer_gamma">transfer_gamma()</a></code>).</p>
+<code>(1/V)^(alpha/gamma)</code> matching <code>cam_map</code>. <code>gamma</code> is the file's
+encoding transfer (see <code><a href="#transfer_gamma">transfer_gamma()</a></code>); <code>alpha</code> scales the
+correction in log space (1 = the full factory curve, 0 = none).</p>
 
 <p>NOTE: the OSV fisheyes arrive already devignetted by the in-camera ISP, so
-applying this on top double-corrects (a visible bright arc at the seam) -
-it is OFF by default in <code>video.convert()</code> and retained only for footage
-that is <em>not</em> already ISP-corrected.</p>
+applying the full curve (alpha=1) on top double-corrects (a visible bright
+arc at the seam) - it is OFF by default in <code>video.convert()</code>. A
+PARTIAL correction (small alpha) targets the residual falloff left by the
+ISP; see IMPROVEMENTS.md for the measured residual, which is what sets
+the justified alpha (0 unless the measurement says otherwise).</p>
+</div>
+
+
+                </section>
+                <section id="geometry_key">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">geometry_key</span><span class="signature pdoc-code multiline">(<span class="param">	<span class="n">calibs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n"><a href="osv_calibration.html#CameraCalib">dji_osv_converter.osv_calibration.CameraCalib</a></span><span class="p">]</span>,</span><span class="param">	<span class="n">width</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">height</span><span class="p">:</span> <span class="nb">int</span>,</span><span class="param">	<span class="n">fov_deg</span><span class="p">:</span> <span class="nb">float</span>,</span><span class="param">	<span class="n">seam_overlap_ratio</span><span class="p">:</span> <span class="nb">float</span></span><span class="return-annotation">) -> <span class="nb">str</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#geometry_key"></a>
+    
+            <div class="docstring"><p>Stable hash of everything the static remap tables depend on.</p>
+
+<p>Files from the same unit share their calibration, so the (seconds-long)
+map build and seam-weight construction can be reused across files in a
+long-lived process. The key covers every calibration field the
+projection reads plus the output geometry; anything else (metadata,
+mount, levelling) is per file and cheap.</p>
+</div>
+
+
+                </section>
+                <section id="clear_geometry_cache">
+                    <div class="attr function">
+            
+        <span class="def">def</span>
+        <span class="name">clear_geometry_cache</span><span class="signature pdoc-code condensed">(<span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
+
+        
+    </div>
+    <a class="headerlink" href="#clear_geometry_cache"></a>
+    
+            <div class="docstring"><p>Drop the process-wide rig geometry cache.</p>
 </div>
 
 

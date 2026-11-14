@@ -68,6 +68,15 @@ injects it after muxing - purely by editing the MP4 box tree, no re-encode.</p>
 <p>Only the <code>moov</code> box grows; the media (<code>mdat</code>) is untouched. When <code>moov</code>
 follows <code>mdat</code> (libav's default) sample offsets stay valid as-is; when it
 precedes <code>mdat</code> the chunk-offset tables (stco/co64) are shifted to match.</p>
+
+<p><strong>Memory</strong>: the default (streaming) path reads only the box headers plus the
+<code>moov</code> box itself (a few hundred KB for a long clip) - never the media.
+An 8K master runs ~1.6 GB per minute, so the old whole-file edit (three
+copies in RAM) would need ~80 GB for a 16-minute clip; the streaming edit
+needs the moov. With <code>moov</code> after <code>mdat</code> the file is edited in place by
+truncating at the moov and rewriting it; with <code>moov</code> before <code>mdat</code>
+(<code>faststart</code>) the media must move, so the file is rewritten to a temporary
+beside it with a bounded-chunk copy and atomically replaced.</p>
 </div>
 
                 
@@ -78,13 +87,18 @@ precedes <code>mdat</code> the chunk-offset tables (stco/co64) are shifted to ma
                     <div class="attr function">
             
         <span class="def">def</span>
-        <span class="name">inject_spherical</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span></span><span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
+        <span class="name">inject_spherical</span><span class="signature pdoc-code condensed">(<span class="param"><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span>, </span><span class="param"><span class="n">streaming</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span></span><span class="return-annotation">) -> <span class="kc">None</span>:</span></span>
 
         
     </div>
     <a class="headerlink" href="#inject_spherical"></a>
     
             <div class="docstring"><p>Add V1 (uuid) and V2 (sv3d) equirectangular metadata to an MP4 in place.</p>
+
+<p><code>streaming=True</code> (default) touches only the box headers and the moov:
+memory is O(moov), not O(file). <code>streaming=False</code> is the original
+whole-file-in-RAM edit, kept for byte-identity checks; both produce the
+same bytes.</p>
 </div>
 
 
