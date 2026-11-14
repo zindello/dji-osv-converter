@@ -63,10 +63,12 @@ _GPU_CACHE: dict = {}
 
 
 def _gpu_stitcher(stitcher: "Stitcher360", maps, width, height, lsc, use_rs, gpu_fmt,
-                  yuv_range, single_pass, lens_interp, reuse: bool):
+                  yuv_range, single_pass, lens_interp, reuse: bool,
+                  seam_engine: str | None = None, seam_morph: str = "legacy"):
     alpha = 1.0 if lsc is True else (0.0 if not lsc else float(lsc))
     key = (stitcher.geometry_key(), width, height, alpha, bool(use_rs), gpu_fmt,
-           yuv_range, bool(single_pass), lens_interp, stitch_gpu.pick_device())
+           yuv_range, bool(single_pass), lens_interp, seam_engine, seam_morph,
+           stitch_gpu.pick_device())
     if reuse and _GPU_CACHE.get("key") == key:
         return _GPU_CACHE["stitcher"]
     g = stitch_gpu.GpuStitcher(
@@ -76,7 +78,8 @@ def _gpu_stitcher(stitcher: "Stitcher360", maps, width, height, lsc, use_rs, gpu
         rs_tables=stitcher.rs_tables() if use_rs else None,
         fisheye_size=(stitcher.calibs[0].width, stitcher.calibs[0].height),
         input_fmt=gpu_fmt, yuv_range=yuv_range,
-        single_pass=single_pass, lens_interp=lens_interp)
+        single_pass=single_pass, lens_interp=lens_interp,
+        seam_engine=seam_engine, seam_morph=seam_morph)
     if reuse:
         _GPU_CACHE.clear()
         _GPU_CACHE.update(key=key, stitcher=g)
@@ -213,6 +216,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             allow_software: bool = False, enc_options: dict | None = None,
             colour_tags: bool = True, enc_inflight_frames: int | None = None,
             single_pass: bool = False, lens_interp: str = "bilinear",
+            seam_engine: str | None = None, seam_morph: str = "legacy",
             reuse: bool = True, compile_cache_dir: str | Path | None = None,
             profile: bool | str = True, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
@@ -280,6 +284,20 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     "catmull" (Catmull-Rom, accurate, ~9x the warp cost) - see
     :class:`~dji_osv_converter.stitch_gpu.GpuStitcher`.
 
+    ``seam_engine`` (single-pass GPU path): where the seam stack runs.
+    "gpu" does all of it on the device and folds the result into the
+    sampling maps, so the stitch thread never waits on the GPU and no
+    OpenCV runs per frame; "cpu" is the earlier path (numpy + OpenCV on the
+    stitch thread, two device syncs per frame). None (default) picks "gpu"
+    on CUDA and MPS. The two differ only inside the seam band, and only by
+    the optical flow (Lucas-Kanade on the device against OpenCV's DIS) -
+    see PERFORMANCE.md. ``seam_morph``: "legacy" (default) is the band
+    morph as shipped; "corrected" swaps the two flows so each lens is
+    moved TOWARDS the other, which is what the morph was meant to do and
+    measurably lowers the band mismatch - it changes the look of the seam
+    on parallax frames, so it is opt-in (PERFORMANCE.md, "The morph
+    direction").
+
     ``reuse`` (default on) keeps the built rig geometry and the GpuStitcher
     alive across calls in this process, so converting many files from the
     same camera pays the setup once (:class:`Converter` wraps this);
@@ -320,7 +338,8 @@ def _convert(input_osv, output_mp4, prof, prof_print, *, width, height, start, c
              codec, bit10, bitrate, bpp, hardware, multiband, exposure, exposure_wb,
              levelling, lsc, seam_flow, audio, spherical, gpu, pipeline, enc_sessions,
              allow_software, enc_options, colour_tags, enc_inflight_frames,
-             single_pass, lens_interp, reuse, compile_cache_dir, progress) -> str:
+             single_pass, lens_interp, seam_engine, seam_morph, reuse,
+             compile_cache_dir, progress) -> str:
     set_compile_cache_dir(compile_cache_dir)
     if codec is None:
         codec = _default_codec(allow_software)
@@ -354,7 +373,8 @@ def _convert(input_osv, output_mp4, prof, prof_print, *, width, height, start, c
     if use_gpu:
         maps, _ = stitcher.maps_for()
         gpu_stitch = _gpu_stitcher(stitcher, maps, width, height, lsc, use_rs, gpu_fmt,
-                                   yuv_range, single_pass, lens_interp, reuse)
+                                   yuv_range, single_pass, lens_interp, reuse,
+                                   seam_engine=seam_engine, seam_morph=seam_morph)
         if prof.enabled:
             prof.set_device(gpu_stitch.dev)
             _profile.reset_gpu_peaks(gpu_stitch.dev)
@@ -762,6 +782,7 @@ def _convert(input_osv, output_mp4, prof, prof_print, *, width, height, start, c
                   levelling=levelling, single_pass=bool(single_pass),
                   lens_interp=lens_interp, seam_flow=seam_flow,
                   seam_engine=getattr(gpu_stitch, "seam_engine", None) if use_gpu else "cpu",
+                  seam_morph=seam_morph,
                   pipeline=bool(pipeline))
         _profile.publish(prof.finish(), _profile.memory_report(dev), emit=prof_print)
     return output_mp4
