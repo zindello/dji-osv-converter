@@ -172,6 +172,25 @@ SEAM_OFFSET_SIGMA = 30.0      # residual smoothing along the seam (path cols)
 # engagement is seamless by construction).
 SEAM_AUTO_PHOTO_T = 3.0       # 10-bit: apply photometric fix above this
 
+# ---- Seam flow on the device (seam_gpu.SeamGpu.lk_flow) ----------------------
+# The GPU seam engine replaces OpenCV's DIS flow (CPU only) with a dense
+# coarse-to-fine Lucas-Kanade solve in torch. Its output passes through the
+# same forward-backward gate, smoothing and clamp as DIS's.
+SEAM_LK_LEVELS = 2            # [CONVENTION] pyramid levels, at 1/8 and 1/4 of the
+                              # flow gray: the two scales DIS's fast preset
+                              # (finest scale 2) uses on the 91 x 1920 band
+# [MEASURED] on the five A/B windows (PERFORMANCE.md, "The flow"): mean band
+# mismatch after the corrected morph, 10-bit, lower is better. DIS: 42.5.
+# Window sigma 2 / 3 / 4 / 6 at 3 iterations: 42.9 / 41.4 / 40.6 / 40.2;
+# iterations 1 / 2 / 3 / 4 / 6 / 12 at sigma 4 (3 for the last two): 41.2 /
+# 40.7 / 40.6 / 40.7 / 42.4 / 43.6 - past 3-4 the undamped steps start to
+# chase noise. Damping 1 / 4 / 16 changes the result by < 0.2.
+SEAM_LK_ITERS = 3             # iterations per level
+SEAM_LK_WINDOW_SIGMA = 4.0    # Gaussian window (level px) of the normal equations
+SEAM_LK_DAMP = 4.0            # Tikhonov damping of the structure tensor (gray
+                              # levels^2 per px^2): windows with less gradient
+                              # energy than this move little
+
 
 # ---- Stabilisation ----------------------------------------------------------
 
@@ -287,6 +306,7 @@ __all__ = [
     "SEAM_DYN_FEATHER_PX", "SEAM_DYN_COLS", "SEAM_DYN_SIGMA",
     "SEAM_DYN_GATE_LO", "SEAM_DYN_GATE_HI", "SEAM_DYN_GATE_SIGMA",
     "SEAM_OFFSET_AGREE_T", "SEAM_OFFSET_SIGMA", "SEAM_AUTO_PHOTO_T",
+    "SEAM_LK_LEVELS", "SEAM_LK_ITERS", "SEAM_LK_WINDOW_SIGMA", "SEAM_LK_DAMP",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
     "GPU_ENGINES", "GPU_ENGINES_DEFAULT", "gpu_engines",
