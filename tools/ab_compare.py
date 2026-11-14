@@ -14,6 +14,7 @@ self-contained ``index.html`` (no network, no libraries) from
 ``tools/ab_viewer.html``.
 
     python tools/ab_compare.py                       # default windows, -> ab_out/
+    python tools/ab_compare.py --set perf --out ab_out/perf_ab   # seam engines, old vs new
     python tools/ab_compare.py --out ab_out --device cuda --windows my_windows.json
     open ab_out/index.html
 
@@ -105,6 +106,29 @@ VARIANTS = {
     "all_catmull": {"desc": "single-pass + Catmull-Rom (quality render option)",
                     "kw": {"single_pass": True, "lens_interp": "catmull"}},
 }
+
+# The performance set (PERFORMANCE.md): the baseline is what production ran
+# at ee1e170 (single-pass, the seam stack on the CPU), against the seam
+# stack on the device and the opt-in corrected morph direction. Every
+# variant names its engine, so a row means the same thing on any device.
+PERF_VARIANTS = {
+    "baseline": {"desc": "production at ee1e170: single-pass, auto seam repair, seam stack on "
+                         "the CPU (OpenCV DIS flow, numpy seam path)",
+                 "kw": {"single_pass": True, "seam_engine": "cpu"}},
+    "gpu_engine": {"desc": "the new default on CUDA/MPS: single-pass, seam stack in torch on "
+                           "the device (Lucas-Kanade flow), same morph direction as shipped",
+                   "kw": {"single_pass": True, "seam_engine": "gpu"}},
+    "seam_off": {"desc": "single-pass with the seam stack off (static blend)",
+                 "kw": {"single_pass": True, "seam_flow": False, "seam_engine": "gpu"}},
+    "cpu_corrected": {"desc": "CPU seam stack with seam_morph=\"corrected\" (opt-in: each lens "
+                              "moves towards the other)",
+                      "kw": {"single_pass": True, "seam_engine": "cpu",
+                             "seam_morph": "corrected"}},
+    "gpu_corrected": {"desc": "device seam stack with seam_morph=\"corrected\" (opt-in)",
+                      "kw": {"single_pass": True, "seam_engine": "gpu",
+                             "seam_morph": "corrected"}},
+}
+VARIANT_SETS = {"quality": VARIANTS, "perf": PERF_VARIANTS}
 
 CROP_W, CROP_H = 1024, 768
 REGIONS = {                       # centre (x, y) in the 7680x3840 plain layout
@@ -199,7 +223,54 @@ def build_stitcher(st: Stitcher360, device: str, kw: dict) -> GpuStitcher:
                        lsc_gain=st.lsc_gains(float(lsc)) if lsc else None,
                        fisheye_size=(st.calibs[0].width, st.calibs[0].height),
                        single_pass=kw.get("single_pass", False),
-                       lens_interp=kw.get("lens_interp", "bilinear"))
+                       lens_interp=kw.get("lens_interp", "bilinear"),
+                       # the quality set predates the device seam engine: it
+                       # stays on the CPU stack so its rows keep their meaning
+                       seam_engine=kw.get("seam_engine", "cpu"),
+                       seam_morph=kw.get("seam_morph", "legacy"))
+
+
+def _psnr10(a: np.ndarray, b: np.ndarray) -> float | None:
+    """PSNR in dB between two p010 planes, on the 10-bit scale (None = identical)."""
+    d = (a.astype(np.int32) - b.astype(np.int32)).astype(np.float32) / 64.0
+    mse = float((d * d).mean())
+    return None if mse == 0.0 else float(10 * np.log10(1023.0 ** 2 / mse))
+
+
+def seam_mask(h: int, w: int, band_rows: tuple[int, int], margin_deg: float = 2.0) -> np.ndarray:
+    """(h, w) bool: output pixels within the seam band, under plain levelling.
+
+    The stitcher's seam work is confined to rows ``band_rows`` of the rig
+    frame: a belt around the great circle between the lenses. Plain
+    levelling turns that circle into the two meridians x = W/4 and 3W/4, so
+    in the output the belt is two vertical strips that widen towards the
+    poles. ``margin_deg`` covers the rig's small tilt against the output
+    axes (1.5 degrees on the sample clips).
+    """
+    half = (band_rows[1] - band_rows[0]) / 2.0 / h * np.pi + np.radians(margin_deg)
+    lon = (np.arange(w) + 0.5) / w * 2 * np.pi - np.pi
+    lat = np.pi / 2 - (np.arange(h) + 0.5) / h * np.pi
+    along_axis = np.cos(lat)[:, None] * np.cos(lon)[None, :]       # d . lens axis
+    return np.abs(np.arcsin(np.clip(along_axis, -1, 1))) <= half
+
+
+def planes_vs_base(Y: np.ndarray, UV: np.ndarray, Yb: np.ndarray, UVb: np.ndarray,
+                   mask: np.ndarray) -> dict:
+    """10-bit differences of a variant's output planes against the baseline's.
+
+    ``mask`` (see :func:`seam_mask`) marks the seam belt, reported as
+    "seam"; everything else is "outside", where the seam stack must change
+    nothing.
+    """
+    d = np.abs(Y.astype(np.int32) - Yb.astype(np.int32)) // 64       # 10-bit levels
+    seam, out = d[mask], d[~mask]
+    return {"psnr_y_db": _psnr10(Y, Yb), "psnr_uv_db": _psnr10(UV, UVb),
+            "seam_psnr_y_db": _psnr10(Y[mask], Yb[mask]),
+            "seam_mean_abs_y": float(seam.mean()), "seam_max_abs_y": int(seam.max()),
+            "seam_pct_gt4": 100.0 * float((seam > 4).mean()),
+            "seam_pct_of_frame": 100.0 * float(mask.mean()),
+            "outside_max_abs_y": int(out.max()),
+            "outside_pct_changed": 100.0 * float((out > 0).mean())}
 
 
 def free_device(device: str) -> None:
@@ -219,6 +290,9 @@ def main() -> int:
     ap.add_argument("--out", default=str(ROOT / "ab_out"))
     ap.add_argument("--device", default=None, help="torch device (default: best)")
     ap.add_argument("--windows", default=None, help="JSON list of windows (see DEFAULT_WINDOWS)")
+    ap.add_argument("--set", default="quality", choices=sorted(VARIANT_SETS),
+                    help="variant set: quality (the stitch improvements) or perf "
+                         "(seam engines, old vs new)")
     ap.add_argument("--variants", nargs="*", default=None, help="subset of variant names")
     ap.add_argument("--no-dji", action="store_true", help="skip the DJI reference even if present")
     ap.add_argument("--timing-frames", type=int, default=4,
@@ -230,7 +304,7 @@ def main() -> int:
     img_dir = out / "img"
     device = args.device or pick_device()
     windows = json.loads(Path(args.windows).read_text()) if args.windows else DEFAULT_WINDOWS
-    variants = {k: v for k, v in VARIANTS.items()
+    variants = {k: v for k, v in VARIANT_SETS[args.set].items()
                 if not args.variants or k in args.variants}
     if "baseline" not in variants:
         raise SystemExit("the baseline variant is required (diffs and alignment hang off it)")
@@ -252,6 +326,8 @@ def main() -> int:
 
     renders: dict[str, dict[str, np.ndarray]] = {w["name"]: {} for w in windows}
     seam_stats: dict[str, dict[str, dict]] = {w["name"]: {} for w in windows}
+    base_planes: dict[str, tuple] = {}
+    vs_base: dict[str, dict[str, dict]] = {w["name"]: {} for w in windows}
 
     # variant-major: ONE stitcher resident at a time
     for vname, var in variants.items():
@@ -275,6 +351,12 @@ def main() -> int:
                     "setup_s": setup, "device": device,
                     "note": "single resident stitcher, one window; MPS/CPU here is not the V100"}
                 first = False
+            if vname == "baseline":
+                base_planes[win["name"]] = (Y, UV)
+            else:
+                vs_base[win["name"]][vname] = planes_vs_base(
+                    Y, UV, *base_planes[win["name"]],
+                    mask=seam_mask(H, W, g._sf_rows))
             bgr = p010_to_bgr(Y, UV)
             renders[win["name"]][vname] = bgr
             seam_stats[win["name"]][vname] = dict(g.seam_stats or {})
@@ -325,6 +407,12 @@ def main() -> int:
                     dpaths[rname] = f"img/{wn}/{vname}/diff_{rname}.jpg"
                     jpeg(out / dpaths[rname], diff_image(c, crop(base, centre)), 88)
             m["sharp"]["full"] = lapvar(small(bgr))
+            if vname in vs_base[wn]:
+                m["vs_base"] = dict(vs_base[wn][vname])
+                for rname in ("seam_left", "seam_right"):
+                    g8 = [cv2.cvtColor(crop(x, REGIONS[rname]), cv2.COLOR_BGR2GRAY)
+                          for x in (bgr, base)]
+                    m["vs_base"][f"ssim_{rname}"] = vd._ssim(g8[0], g8[1])
             m["gradient"] = sky_gradient(bgr)
             if wn in dji_small and vname != "dji":
                 aligned = vd.match_tone(vd.apply_rotation(small(bgr), dji_R[wn]), dji_small[wn])
@@ -332,6 +420,10 @@ def main() -> int:
             manifest["images"][wn][vname] = paths
             manifest["diffs"][wn][vname] = dpaths
             manifest["metrics"][wn][vname] = m
+            if "vs_base" in m:
+                log.info("  %-12s %-12s vs baseline: %s", wn, vname,
+                         {k: (round(v, 3) if isinstance(v, float) else v)
+                          for k, v in m["vs_base"].items()})
             log.info("  %-12s %-12s sharp(front)=%.0f seam=%s dji=%s", wn, vname,
                      m["sharp"]["front"], m["seam"] or "-",
                      {k: round(v, 3) for k, v in m["dji"].items() if k in ("ncc", "ssim")}

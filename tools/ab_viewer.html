@@ -247,6 +247,19 @@ function renderPanel() {
     row("edge-NCC vs DJI", mA.dji && mA.dji.edge_ncc, mB.dji && mB.dji.edge_ncc, true);
     row("PSNR vs DJI (dB)", mA.dji && mA.dji.psnr_db, mB.dji && mB.dji.psnr_db, true, 2);
   }
+  const va = mA.vs_base, vb = mB.vs_base;
+  if (va || vb) {
+    const v = (o, k) => o ? (o[k] === null ? "identical" : o[k]) : undefined;
+    const vrow = (label, k, d) => rows.push(`<tr><td>${label}</td><td>${typeof v(va, k) === "string" ? v(va, k) : fmt(v(va, k), d)}</td><td>${typeof v(vb, k) === "string" ? v(vb, k) : fmt(v(vb, k), d)}</td></tr>`);
+    vrow("PSNR Y vs baseline (dB, 10-bit)", "psnr_y_db", 2);
+    vrow("PSNR UV vs baseline (dB)", "psnr_uv_db", 2);
+    vrow("seam belt: PSNR Y vs baseline (dB)", "seam_psnr_y_db", 2);
+    vrow("seam belt: mean |ΔY| (10-bit levels)", "seam_mean_abs_y", 3);
+    vrow("seam belt: pixels differing by > 4 levels (%)", "seam_pct_gt4", 2);
+    vrow("outside the seam belt: max |ΔY|", "outside_max_abs_y", 0);
+    vrow("SSIM vs baseline, seam_left crop", "ssim_seam_left", 4);
+    vrow("SSIM vs baseline, seam_right crop", "ssim_seam_right", 4);
+  }
   row("sharpness (full, downscaled)", mA.sharp && mA.sharp.full, mB.sharp && mB.sharp.full, true, 1);
   const sa = mA.seam || {}, sb = mB.seam || {};
   row("seam mismatch pre-stack (10-bit)", sa.pre, sb.pre, false, 2);
