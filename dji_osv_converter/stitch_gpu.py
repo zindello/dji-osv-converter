@@ -41,6 +41,16 @@ def pick_device(prefer: str | None = None) -> str | None:
     return "cpu"
 
 
+def default_seam_engine(device) -> str:
+    """Where the seam stack runs by default on ``device`` ("gpu" or "cpu").
+
+    On a GPU the device engine wins by removing the per-frame host syncs
+    and the host work between them; on the torch CPU device there is no
+    queue to keep busy and OpenCV's DIS is the faster flow.
+    """
+    return "cpu" if torch.device(device).type == "cpu" else "gpu"
+
+
 def available(prefer: str | None = None) -> bool:
     dev = pick_device(prefer)
     return dev is not None and dev != "cpu"
@@ -129,7 +139,8 @@ class GpuStitcher:
                  rs_tables=None, fisheye_size: tuple[int, int] = (3840, 3840),
                  input_fmt: str = "yuv420p10le", yuv_range: str = "limited",
                  compile: bool = True, single_pass: bool = False,
-                 lens_interp: str = "bilinear"):
+                 lens_interp: str = "bilinear", seam_engine: str | None = None,
+                 seam_morph: str = "legacy"):
         """
         ``single_pass``: compose the per-frame levelling with the static lens
         maps so each output pixel samples its fisheye ONCE (see
@@ -144,12 +155,30 @@ class GpuStitcher:
         no sharpening character), built from 9 bilinear fetches so it costs
         ~9x a bilinear warp - an option for quality renders, not the
         unattended default.
+
+        ``seam_engine`` (single-pass stitch): where the seam stack runs.
+        ``"cpu"`` - the reference path: OpenCV on the host (two device->host
+        syncs a frame, the GPU idle meanwhile), fields applied sparsely.
+        ``"gpu"`` - the whole stack on the device with no host sync
+        (:mod:`seam_gpu`), fields folded into the lens maps' band rows.
+        None picks per device (:func:`default_seam_engine`).
+
+        ``seam_morph``: which flow moves which lens in the band morph.
+        ``"legacy"`` (the default: the shipped behaviour) samples lens A at
+        ``p + t0 * f_ab`` and lens B at ``p + t1 * f_ba``. With
+        ``a(p) ~ b(p + f_ab(p))`` that moves each lens AWAY from the other
+        (measured: it raises the band mismatch on every test window, see
+        PERFORMANCE.md); ``"corrected"`` swaps the two flows so the lenses
+        meet. Kept opt-in because it changes the look of the output.
         """
         if torch is None:
             raise RuntimeError("torch is not installed")
         if lens_interp not in ("bilinear", "bicubic", "catmull"):
             raise ValueError("lens_interp must be 'bilinear', 'bicubic' or 'catmull', "
                              f"not {lens_interp!r}")
+        if seam_morph not in ("legacy", "corrected"):
+            raise ValueError(f"seam_morph must be 'legacy' or 'corrected', not {seam_morph!r}")
+        self.seam_morph = seam_morph
         self.single_pass = bool(single_pass)
         self.lens_interp = lens_interp
         self._sp = None               # single-pass statics, built on first use
@@ -158,9 +187,18 @@ class GpuStitcher:
         # inter-lens mean |A-B| over the inner blend band before the seam
         # stack (``pre``) and after morph (``post``, None when the flow did
         # not engage), plus which parts engaged. Read by tools/ab_compare.py.
-        self.seam_stats: dict | None = None
+        self._seam_stats: dict | None = None
         dev = pick_device(device)
         self.dev = torch.device(dev)
+        if seam_engine is None:
+            seam_engine = default_seam_engine(dev)
+        if seam_engine not in ("cpu", "gpu"):
+            raise ValueError(f"seam_engine must be 'cpu' or 'gpu', not {seam_engine!r}")
+        # the device engine serves the single-pass stitch; the two-pass
+        # stitch keeps the reference path
+        self.seam_engine = seam_engine if self.single_pass else "cpu"
+        self._seam = None             # seam_gpu.SeamGpu, built on first use
+        self._band_dirty = False      # the maps' band rows hold a frame's morph
         self.W, self.H = width, height
         if input_fmt not in ("yuv420p10le", "p010le", "cuda"):
             raise ValueError(f"unsupported input_fmt {input_fmt!r}")
@@ -328,6 +366,25 @@ class GpuStitcher:
                            for t, _ in rs_tables]
             self.rs_J = [torch.from_numpy(np.ascontiguousarray(j)).to(self.dev)
                          for _, j in rs_tables]
+
+    @property
+    def seam_stats(self) -> dict | None:
+        """Diagnostics of the last stitch's seam band (see ``__init__``).
+
+        The device engine leaves them as device scalars so the stitch never
+        waits on the GPU; reading this property fetches them (one sync).
+        """
+        st = self._seam_stats
+        if st is not None and st.get("_dev") is not None:
+            pre, photo, flow, post = (float(v) for v in torch.stack(st["_dev"]).cpu())
+            st = {"pre": pre, "photo": photo > 0.5, "flow": flow > 0.5,
+                  "post": post if flow > 0.5 else None}
+            self._seam_stats = st
+        return st
+
+    @seam_stats.setter
+    def seam_stats(self, value: dict | None) -> None:
+        self._seam_stats = value
 
     def _level_grid(self, R: np.ndarray) -> "torch.Tensor":
         """Full-res sampling grid (1,H,W,2) for rotating the equirect by R.
@@ -575,6 +632,8 @@ class GpuStitcher:
         if est["flow"] is None:
             return Ya, UVa, Yb, UVb, None, None
         f01s, f10s, sh, sw = est["flow"]
+        if self.seam_morph == "corrected":
+            f01s, f10s = f10s, f01s
         bh = r1 - r0
 
         def up(f, size, w_full, h_full):
@@ -743,6 +802,9 @@ class GpuStitcher:
             lsc_pad = [pad_hw_rep(g).contiguous() for g in self.lsc_Y]
         r0, r1 = self._sf_rows
         bh = r1 - r0
+        if self.seam_engine == "gpu":
+            self._sp_init_gpu(uv_pad, w_pad, lsc_pad)
+            uv_pad = w_pad = lsc_pad = None      # owned by the engine's maps
         self._sp = dict(uv=uv_pad, w=w_pad, lsc=lsc_pad, bh=bh,
                         # band-field sampling: rows r0..r1-1 of the rig pano
                         # -> normalised [-1,1] over the (bh) band rows
@@ -759,10 +821,182 @@ class GpuStitcher:
         if self._compile:
             try:
                 fn = torch.compile(_uv_to_grid, dynamic=True)
-                fn(uv_pad[0][:, :, :8, :8].contiguous(), 1.0, 1.0, 0.0)
+                fn(torch.zeros(1, 2, 8, 8, device=dev), 1.0, 1.0, 0.0)
                 self._sp["to_grid"] = fn
             except Exception:
                 pass
+
+    # ---- single-pass, seam stack on the device ---------------------------
+    #
+    # seam_engine="gpu". The reference path above estimates the seam fields
+    # on the host (two device->host syncs a frame, with ~40 ms of OpenCV on
+    # an M3 between them and the GPU idle), then applies them SPARSELY: a
+    # nonzero() over the frame (a third sync, and a different tensor size
+    # every frame), point gathers, a clone of the level grid per lens and
+    # indexed updates.
+    #
+    # Here nothing leaves the device and every shape is static. The fields
+    # are folded into the things the frame samples anyway:
+    #
+    # - the flow morph: each lens's padded map (lens px per rig direction)
+    #   has its band rows REWRITTEN each frame with the static map sampled
+    #   at (p + ramped flow offset). The full-frame gather of that map at
+    #   the level grid then lands on the morphed lens pixel with no extra
+    #   full-frame work: no grid clone, no index_put;
+    # - the photometric offset and the dynamic seam: one persistent
+    #   two-channel map [w, c] whose band rows are rewritten with the
+    #   frame's blend weight and the blended correction
+    #   c = w*cA - (1-w)*cB, so that lerp(Yb - cB, Ya + cA, w) is
+    #   lerp(Yb, Ya, w) + c: one gather replaces the weight gather.
+    #
+    # ``seam_flow="auto"`` multiplies its detectors' 0/1 results into the
+    # fields instead of branching on them, so the stitch thread never waits
+    # for the device. Differences from the reference path, all inside the
+    # band: the flow is seam_gpu's Lucas-Kanade, not DIS; the offsets and
+    # corrections are composed in rig space and interpolated (the reference
+    # interpolates the fields, then composes); the photometric LUT is read
+    # at the rig-band sample instead of the output sample; morph offsets
+    # wrap across the +-180 degree meridian instead of clamping at it.
+
+    def _sp_init_gpu(self, uv_pad, w_pad, lsc_pad):
+        from .constants import SEAM_FLOW_MAX_SHIFT_PX
+        from .seam_gpu import SeamGpu
+        if self._sf is None:
+            self._sf_init()
+        H, W, dev = self.H, self.W, self.dev
+        r0, r1 = self._sf_rows
+        bh = r1 - r0
+        maps = [torch.cat([uv_pad[i], lsc_pad[i]], 1).contiguous() if lsc_pad is not None
+                else uv_pad[i] for i in range(len(uv_pad))]
+        # static source for the band rewrite: the band rows plus the reach
+        # of the largest morph offset, wrapped in longitude
+        m = int(np.ceil(SEAM_FLOW_MAX_SHIFT_PX)) + 4
+        s0, s1 = max(r0 - m, 0), min(r1 + m, H + 1)
+        src = [torch.cat([mp[:, :, s0:s1, W - m:W], mp[:, :, s0:s1, :W],
+                          mp[:, :, s0:s1, :m]], 3).contiguous() for mp in maps]
+        sw_, sh_ = W + 2 * m, s1 - s0
+        xs = (torch.arange(W, device=dev, dtype=torch.float32) + m) * (2.0 / (sw_ - 1)) - 1.0
+        ys = (torch.arange(r0, r1, device=dev, dtype=torch.float32) - s0) * (2.0 / (sh_ - 1)) - 1.0
+        gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+        ysc = torch.linspace(-1.0, 1.0, bh, device=dev)
+        xsc = torch.linspace(-1.0, 1.0, W, device=dev)
+        gyc, gxc = torch.meshgrid(ysc, xsc, indexing="ij")
+        nrm = lambda a, b: torch.tensor([a, b], device=dev).view(1, 1, 1, 2)
+        self._spg = dict(
+            maps=maps, src=src, lsc=lsc_pad is not None,
+            src_rows=(r0 - s0, r1 - s0), src_pad=m,
+            src_base=torch.stack([gx, gy], -1)[None],
+            src_norm=nrm(2.0 / (sw_ - 1), 2.0 / (sh_ - 1)),
+            crop_base=torch.stack([gxc, gyc], -1)[None],
+            crop_norm=nrm(2.0 / (W - 1), 2.0 / max(bh - 1, 1)),
+            # [blend weight, blended photometric correction]
+            wc=torch.cat([w_pad, torch.zeros_like(w_pad)], 1).contiguous(),
+            w_band=w_pad[:, :, r0:r1].clone(),
+            grid_band=[g[:, r0:r1].contiguous() for g in self.grid])
+        self._seam = SeamGpu(self._sf_inner4, self.w3[0, 0, r0:r1], self._sf_cam0_top,
+                             self.y_lo, self.y_hi, dev)
+
+    def _sp_band_restore(self):
+        """Put the static values back into the maps' band rows."""
+        g = self._spg
+        r0, r1 = self._sf_rows
+        q0, q1 = g["src_rows"]
+        m, W = g["src_pad"], self.W
+        for mp, src in zip(g["maps"], g["src"]):
+            mp[:, :, r0:r1, :W] = src[:, :, q0:q1, m:m + W]
+            mp[:, :, r0:r1, W] = src[:, :, q0:q1, m]
+        g["wc"][:, :1, r0:r1] = g["w_band"]
+        g["wc"][:, 1:, r0:r1] = 0.0
+        self._band_dirty = False
+
+    def _sp_seam_gpu(self, Y0, Y1, auto: bool):
+        """Run the seam stack on the device and fold it into the maps' band rows."""
+        g, sf, seam = self._spg, self._sf, self._seam
+        r0, r1 = self._sf_rows
+        bh, W = r1 - r0, self.W
+        gs = lambda img, grid: F.grid_sample(img, grid, mode="bilinear",
+                                             align_corners=True, padding_mode="border")
+        prof = _profile.active()
+        with prof.stage("st.seam_warp", gpu=True):
+            # band-only rig warps (bilinear: the detectors were tuned on it)
+            Ya = gs(Y0, g["grid_band"][0])
+            Yb = gs(Y1, g["grid_band"][1])
+        with prof.stage("st.seam_est", gpu=True):
+            est = seam.estimate(Ya, Yb, auto)
+        with prof.stage("st.seam_fields", gpu=True):
+            fl = est["flow"]                                         # (2,2,bh,W) px
+            fa, fb = ((fl[1:2], fl[0:1]) if self.seam_morph == "corrected"
+                      else (fl[0:1], fl[1:2]))
+            oa = (fa * sf["t0"]).permute(0, 2, 3, 1)                 # (1,bh,W,2)
+            ob = (fb * sf["t1"]).permute(0, 2, 3, 1)
+            Ma = gs(Ya, g["crop_base"] + oa * g["crop_norm"])
+            Mb = gs(Yb, g["crop_base"] + ob * g["crop_norm"])
+            sp = F.interpolate(est["sp"], size=(bh, W), mode="bilinear", align_corners=False)
+            lut, ramp = est["lut"], sf["ramp"]
+            ca = (lut[Ma.clamp(0, 1023).long()] + sp) * ramp
+            cb = (lut[Mb.clamp(0, 1023).long()] + sp) * ramp
+        with prof.stage("st.seam_dp", gpu=True):
+            wd, post = seam.dynamic(Ma + ca, Mb - cb, est["engaged"])
+        with prof.stage("st.band_write", gpu=True):
+            band = torch.cat([wd, torch.lerp(-cb, ca, wd)], 1)       # [w, w*ca - (1-w)*cb]
+            wc = g["wc"]
+            wc[:, :, r0:r1, :W] = band
+            wc[:, :, r0:r1, W] = band[:, :, :, 0]
+            for mp, src, o in zip(g["maps"], g["src"], (oa, ob)):
+                mb = gs(src, g["src_base"] + o * g["src_norm"])      # (1,C,bh,W)
+                mp[:, :, r0:r1, :W] = mb
+                mp[:, :, r0:r1, W] = mb[:, :, :, 0]
+            self._band_dirty = True
+        self._seam_stats = {"_dev": [est["pre"], est["photo"], est["engaged"], post]}
+
+    def _stitch_single_pass_gpu(self, y0, y1, R: np.ndarray, seam_flow=False):
+        """Single-pass stitch with the seam stack on the device (see above)."""
+        if self._sp is None:
+            self._sp_init()
+        prof = _profile.active()
+        g = self._spg
+        with prof.stage("st.split", gpu=True):
+            Y0, U0, V0 = self._split_yuv(y0)
+            Y1, U1, V1 = self._split_yuv(y1)
+            UV0, UV1 = torch.cat([U0, V0], 1), torch.cat([U1, V1], 1)
+        with prof.stage("st.level_grid", gpu=True):
+            gf = self._level_grid(R)                                 # (1,H,W,2)
+        if seam_flow:
+            self._sp_seam_gpu(Y0, Y1, auto=(seam_flow == "auto"))
+        elif self._band_dirty:
+            self._sp_band_restore()
+        fw, fh = float(self.fw), float(self.fh)
+        to_grid = self._sp["to_grid"]
+        gsb = lambda img, grid: F.grid_sample(img, grid, mode="bilinear",
+                                              align_corners=True, padding_mode="border")
+        planes = []
+        with prof.stage("st.sample", gpu=True):
+            for i, (Y, UV) in enumerate(((Y0, UV0), (Y1, UV1))):
+                m = gsb(g["maps"][i], gf)                            # (1,C,H,W): lens px (+gain)
+                Ys = self._sample_luma(Y, to_grid(m[:, :2], 2.0 / (fw - 1), 2.0 / (fh - 1), 0.0))
+                # chroma reads the same map at the decimated grid: the
+                # stride-2 slice of the full-res gather is that sample
+                # exactly (4:2:0 "left" siting as in _sp_sample_lens)
+                mh = m[:, :, ::2, ::2]
+                UVs = F.grid_sample(UV, to_grid(mh[:, :2].contiguous(), 1.0 / (fw / 2 - 1),
+                                                1.0 / (fh / 2 - 1), 0.5),
+                                    mode="bilinear", align_corners=True, padding_mode="zeros")
+                if g["lsc"]:
+                    Ys = (Ys - self.y_lo) * m[:, 2:3] + self.y_lo
+                    UVs = (UVs - 512.0) * mh[:, 2:3] + 512.0
+                planes.append((Ys, UVs))
+                del m, mh
+        (Ya, UVa), (Yb, UVb) = planes
+        with prof.stage("st.blend", gpu=True):
+            if seam_flow:
+                wcs = gsb(g["wc"], gf)                               # (1,2,H,W)
+                w = wcs[:, :1]
+                Y = torch.lerp(Yb, Ya, w).add_(wcs[:, 1:2])
+            else:
+                w = gsb(g["wc"][:, :1], gf)
+                Y = torch.lerp(Yb, Ya, w)
+            UV = torch.lerp(UVb, UVa, F.avg_pool2d(w, 2))            # as the two-pass w3h
+        return Y, UV
 
     def _sp_band_grid(self, g):
         """Level grid (1,h,w,2) -> grid over a (bh, W+1) band field, zero outside."""
@@ -861,6 +1095,8 @@ class GpuStitcher:
             fy = (t[:, 1] * (bh / sh)).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
             return torch.stack([fx, fy], 1)                         # (1,2,bh,W) px
 
+        if self.seam_morph == "corrected":
+            f01s, f10s = f10s, f01s
         o01 = up_px(f01s) * sf["t0"]
         o10 = up_px(f10s) * sf["t1"]
         out["flow"] = (self._sp_pad_band(o01), self._sp_pad_band(o10))
@@ -907,6 +1143,8 @@ class GpuStitcher:
         ms on an M3 whose GPU one 8K frame already saturates); sparse is a
         nonzero() plus work proportional to the band.
         """
+        if self.seam_engine == "gpu":
+            return self._stitch_single_pass_gpu(y0, y1, R, seam_flow=seam_flow)
         if self._sp is None:
             self._sp_init()
         prof = _profile.active()
