@@ -37,6 +37,7 @@ import numpy as np
 
 from .constants import CUVID_PROBE_PACKETS
 from .decode import _frame_index, _frame_p010, _open_stream, _video_streams
+from . import profile as _profile
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +138,12 @@ def cuda_worker(path, si: int, start: int, count: int | None, q, stop):
         side = torch.cuda.Stream()
         c, s, rate, tb = _open_stream(path, si, start, hwaccel=hwaccel_primary())
         fh, fw = s.codec_context.height, s.codec_context.width
-        for fr in c.decode(s):
-            if stop.is_set():
+        prof = _profile.active()
+        frames = iter(c.decode(s))
+        while True:
+            with prof.stage("decode.nvdec"):         # demux + NVDEC, to device
+                fr = next(frames, None)
+            if fr is None or stop.is_set():
                 break
             if fr.pts is None:
                 continue
@@ -147,13 +152,16 @@ def cuda_worker(path, si: int, start: int, count: int | None, q, stop):
                 continue
             if count is not None and idx >= start + count:
                 break
-            with torch.cuda.stream(side):
-                Y = torch.as_tensor(_CudaPlane(fr.planes[0], fh, fw),
-                                    device="cuda").clone()
-                UV = torch.as_tensor(_CudaPlane(fr.planes[1], fh // 2, fw),
-                                     device="cuda").clone()
-            side.synchronize()           # surface safe to release after this
-            if not _queue_put(q, (idx, (Y, UV)), stop):
+            with prof.stage("decode.clone"):
+                with torch.cuda.stream(side):
+                    Y = torch.as_tensor(_CudaPlane(fr.planes[0], fh, fw),
+                                        device="cuda").clone()
+                    UV = torch.as_tensor(_CudaPlane(fr.planes[1], fh // 2, fw),
+                                         device="cuda").clone()
+                side.synchronize()       # surface safe to release after this
+            with prof.stage("decode.wait"):
+                ok = _queue_put(q, (idx, (Y, UV)), stop)
+            if not ok:
                 break
         c.close()
     except Exception as e:
@@ -205,13 +213,16 @@ def cuvid_worker(path, si: int, start: int, count: int | None, q, stop,
         ctx = av.CodecContext.create("hevc_cuvid", "r")
         ctx.extradata = s.codec_context.extradata
 
+        prof = _profile.active()
+
         def payload(fr):
             planes = _frame_p010(fr)
             if alloc is None:
                 return planes
-            slot = alloc()
-            np.copyto(slot.Y, planes[0])
-            np.copyto(slot.UV, planes[1])
+            with prof.stage("decode.stage_pinned"):
+                slot = alloc()
+                np.copyto(slot.Y, planes[0])
+                np.copyto(slot.UV, planes[1])
             return slot
 
         def emit(fr) -> bool:            # True = reached count, stop decoding
@@ -222,7 +233,9 @@ def cuvid_worker(path, si: int, start: int, count: int | None, q, stop,
                 return False
             if count is not None and idx >= start + count:
                 return True
-            return not _queue_put(q, (idx, payload(fr)), stop)
+            item = (idx, payload(fr))
+            with prof.stage("decode.wait"):
+                return not _queue_put(q, item, stop)
 
         done = False
         for pkt in c.demux(s):
@@ -230,7 +243,9 @@ def cuvid_worker(path, si: int, start: int, count: int | None, q, stop,
                 break
             if pkt.dts is None:
                 continue
-            for fr in ctx.decode(pkt):
+            with prof.stage("decode.nvdec"):         # hevc_cuvid -> system memory
+                frs = list(ctx.decode(pkt))
+            for fr in frs:
                 if emit(fr):
                     done = True
                     break

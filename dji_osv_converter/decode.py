@@ -255,7 +255,15 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
                        backward=True, any_frame=False)
         to_arr = _frame_p010 if fmt == "p010le" else (
             lambda fr: fr.to_ndarray(format=fmt))
-        for fa, fb in zip(ca.decode(sa), cb.decode(sb)):
+        from . import profile as _profile
+        prof = _profile.active()
+        pairs = zip(ca.decode(sa), cb.decode(sb))
+        while True:
+            with prof.stage("decode.hw"):            # demux + decode, both streams
+                pair = next(pairs, None)
+            if pair is None:
+                break
+            fa, fb = pair
             if fa.pts is None or fb.pts is None:
                 continue
             idx = _frame_index(fa.pts, sa.time_base, float(sa.average_rate))
@@ -263,7 +271,9 @@ def iter_pairs(path: str | Path, start: int = 0, count: int | None = None,
                 continue
             if count is not None and idx >= start + count:
                 break
-            yield idx, to_arr(fa), to_arr(fb)
+            with prof.stage("decode.to_array"):
+                item = idx, to_arr(fa), to_arr(fb)
+            yield item
     finally:
         ca.close()
         cb.close()

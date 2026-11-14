@@ -29,6 +29,7 @@ from .constants import (BITRATE_BPP, ENC_CHUNK_SECONDS, PIPELINE_QUEUE_FRAMES,
 from .pipeline import Stitcher360
 from .decode import iter_pairs, prefetch, gpu_decode_fmt
 from .spherical import inject_spherical
+from . import profile as _profile
 from . import stitch_gpu
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             colour_tags: bool = True, enc_inflight_frames: int | None = None,
             single_pass: bool = False, lens_interp: str = "bilinear",
             reuse: bool = True, compile_cache_dir: str | Path | None = None,
-            progress=None) -> str:
+            profile: bool | str = True, progress=None) -> str:
     """Stitch an OSV to an equirectangular 360 MP4 and return the output path.
 
     ``count`` limits the number of frames (None = whole clip); ``start`` skips
@@ -285,10 +286,41 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     ``compile_cache_dir`` persists torch.compile's caches across processes
     (see :func:`set_compile_cache_dir`).
 
+    ``profile`` (default on): per-stage timing, logged at the end of the
+    conversion as one ``osv-profile: {json}`` line plus an ``osv-mem:
+    {json}`` line with the peak resident and GPU memory (see
+    :mod:`~dji_osv_converter.profile`; also returned by
+    ``profile.last_profile()``). It costs a few microseconds per stage and
+    adds no device sync. ``"print"`` also prints both lines to stdout;
+    ``"sync"`` synchronises the device at every GPU stage boundary for
+    exact attribution (a diagnostic: it serialises the pipeline); False
+    turns it off. Only one conversion per process is profiled at a time.
+
     The output is always muxed as MP4 regardless of the path's extension
     (temporary names such as ``out.mp4.partial`` are fine).
     """
-    input_osv, output_mp4 = str(input_osv), str(output_mp4)
+    kw = {k: v for k, v in locals().items()
+          if k not in ("input_osv", "output_mp4", "profile")}
+    prof = None
+    if profile and not _profile.active().enabled:
+        prof = _profile.Profile(mode="sync" if profile == "sync" else "events")
+        prof.share("decode.nvdec", "decode.clone", "decode.wait",
+                   "decode.stage_pinned", "enc.idle", "enc.encode")
+        _profile.activate(prof)
+    try:
+        return _convert(str(input_osv), str(output_mp4),
+                        prof if prof is not None else _profile.NullProfile(),
+                        profile == "print", **kw)
+    finally:
+        if prof is not None:
+            _profile.activate(None)
+
+
+def _convert(input_osv, output_mp4, prof, prof_print, *, width, height, start, count,
+             codec, bit10, bitrate, bpp, hardware, multiband, exposure, exposure_wb,
+             levelling, lsc, seam_flow, audio, spherical, gpu, pipeline, enc_sessions,
+             allow_software, enc_options, colour_tags, enc_inflight_frames,
+             single_pass, lens_interp, reuse, compile_cache_dir, progress) -> str:
     set_compile_cache_dir(compile_cache_dir)
     if codec is None:
         codec = _default_codec(allow_software)
@@ -323,6 +355,9 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         maps, _ = stitcher.maps_for()
         gpu_stitch = _gpu_stitcher(stitcher, maps, width, height, lsc, use_rs, gpu_fmt,
                                    yuv_range, single_pass, lens_interp, reuse)
+        if prof.enabled:
+            prof.set_device(gpu_stitch.dev)
+            _profile.reset_gpu_peaks(gpu_stitch.dev)
     fps = Fraction(vid.average_rate).limit_denominator(90000)
     total = vid.frames or 0
     n_frames = count if count is not None else (total - start if total else None)
@@ -381,14 +416,17 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     dec_fmt = gpu_fmt if use_gpu else "bgr24"
 
     def _stitch(idx, f0, f1, gpu_async=False):
-        R = stitcher.levelling_for(idx)
-        if use_gpu:
-            rs = stitcher.rs_args_for(idx) if use_rs else None
-            fn = gpu_stitch.stitch_yuv_async if gpu_async else gpu_stitch.stitch_yuv
-            return fn(f0, f1, R, exposure=exposure, wb=exposure_wb, rs=rs,
-                      seam_flow=seam_flow)            # (Y, UV) p010, or a handle
-        return stitcher.stitch(f0, f1, frame=idx, exposure=exposure,
-                               multiband=multiband, flow=bool(seam_flow))
+        prof.frame_begin()
+        with prof.stage("main.levelling"):
+            R = stitcher.levelling_for(idx)
+        with prof.stage("main.stitch"):
+            if use_gpu:
+                rs = stitcher.rs_args_for(idx) if use_rs else None
+                fn = gpu_stitch.stitch_yuv_async if gpu_async else gpu_stitch.stitch_yuv
+                return fn(f0, f1, R, exposure=exposure, wb=exposure_wb, rs=rs,
+                          seam_flow=seam_flow)        # (Y, UV) p010, or a handle
+            return stitcher.stitch(f0, f1, frame=idx, exposure=exposure,
+                                   multiband=multiband, flow=bool(seam_flow))
 
     def _p010_frame(planes) -> "av.VideoFrame":
         Y, UV = planes
@@ -411,10 +449,14 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             if isinstance(result, stitch_gpu._AsyncPlanes):
                 # blocks until the side-stream D2H lands, then copies out of
                 # the pinned slot (the copy into the AVFrame happens anyway)
-                fr = _p010_frame(result.planes())
+                with prof.stage("build.wait_d2h"):
+                    planes = result.planes()
+                with prof.stage("build.copy"):
+                    fr = _p010_frame(planes)
                 result.release()
             else:
-                fr = _p010_frame(result)
+                with prof.stage("build.copy"):
+                    fr = _p010_frame(result)
             if vs.pix_fmt != "p010le":
                 # Software encoders (libx265) take planar yuv420p10le; the
                 # p010le->planar repack is lossless (same 10-bit samples).
@@ -426,8 +468,11 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     def _encode(pts, result):
         fr = _build_frame(result)
         fr.pts = pts
-        for pkt in vs.encode(fr):
-            out.mux(pkt)
+        with prof.stage("enc.encode"):
+            pkts = list(vs.encode(fr))
+        with prof.stage("mux.write"):
+            for pkt in pkts:
+                out.mux(pkt)
 
     # Overlap decode / stitch / encode on separate threads. Pays whenever the
     # stitch runs on a GPU: decode (~53 ms, VideoToolbox/libav) then hides
@@ -490,18 +535,21 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             def _builder():
                 try:
                     while True:
-                        item = enc_q.get()
+                        with prof.stage("build.idle"):
+                            item = enc_q.get()
                         if item is enc_done:
                             for q in sess_qs:
                                 q.put(enc_done)
                             return
                         pts, result = item
-                        while not inflight.acquire(timeout=0.5):
-                            if enc_err:
-                                raise enc_err[0]
+                        with prof.stage("build.wait"):
+                            while not inflight.acquire(timeout=0.5):
+                                if enc_err:
+                                    raise enc_err[0]
                         fr = _build_frame(result)
                         fr.pts = pts
-                        sess_qs[(pts // chunk) % n_sess].put(fr)
+                        with prof.stage("build.wait"):
+                            sess_qs[(pts // chunk) % n_sess].put(fr)
                 except Exception as e:             # noqa: BLE001
                     enc_err.append(e)
                     for q in sess_qs:
@@ -536,7 +584,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                 try:
                     ctx = _new_session()
                     while True:
-                        fr = sess_qs[k].get()
+                        with prof.stage("enc.idle"):
+                            fr = sess_qs[k].get()
                         if fr is enc_done:
                             for pkt in ctx.encode(None):
                                 pending.setdefault(pkt.pts // chunk, []).append(pkt)
@@ -547,7 +596,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                             # chunk start -> forced IDR (closed chunk)
                             fr.pict_type = av.video.frame.PictureType.I
                         try:
-                            pkts = list(ctx.encode(fr))
+                            with prof.stage("enc.encode"):
+                                pkts = list(ctx.encode(fr))
                         finally:
                             del fr
                             inflight.release()
@@ -572,7 +622,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                             expected += 1
 
                     while ends < n_sess:
-                        cid, payload = mux_q.get()
+                        with prof.stage("mux.idle"):
+                            cid, payload = mux_q.get()
                         if cid is enc_done:
                             ends += 1
                             if not xset and payload:
@@ -580,7 +631,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                                 xset = True
                             continue
                         buf[cid] = payload
-                        drain()
+                        with prof.stage("mux.write"):
+                            drain()
                     drain()
                 except Exception as e:             # noqa: BLE001
                     enc_err.append(e)
@@ -593,14 +645,16 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             def _builder():
                 try:
                     while True:
-                        item = enc_q.get()
+                        with prof.stage("build.idle"):
+                            item = enc_q.get()
                         if item is enc_done:
                             frame_q.put(enc_done)
                             return
                         pts, result = item
                         fr = _build_frame(result)
                         fr.pts = pts
-                        frame_q.put(fr)
+                        with prof.stage("build.wait"):
+                            frame_q.put(fr)
                 except Exception as e:             # noqa: BLE001
                     enc_err.append(e)
                     frame_q.put(enc_done)
@@ -608,11 +662,15 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             def _encoder():
                 try:
                     while True:
-                        fr = frame_q.get()
+                        with prof.stage("enc.idle"):
+                            fr = frame_q.get()
                         if fr is enc_done:
                             return
-                        for pkt in vs.encode(fr):
-                            out.mux(pkt)
+                        with prof.stage("enc.encode"):
+                            pkts = list(vs.encode(fr))
+                        with prof.stage("mux.write"):
+                            for pkt in pkts:
+                                out.mux(pkt)
                 except Exception as e:             # noqa: BLE001
                     enc_err.append(e)
 
@@ -621,7 +679,8 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
             def _encoder():
                 try:
                     while True:
-                        item = enc_q.get()
+                        with prof.stage("enc.idle"):
+                            item = enc_q.get()
                         if item is enc_done:
                             return
                         _encode(*item)
@@ -653,11 +712,20 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
                 except queue.Full:
                     continue
 
-        for idx, f0, f1 in prefetch(iter_pairs(input_osv, start=start, count=count,
-                                               fmt=dec_fmt, hardware=hardware,
-                                               alloc=pool.alloc if pool else None),
-                                    size=PIPELINE_QUEUE_FRAMES):
-            _feed((done, _stitch(idx, f0, f1, gpu_async=gpu_async)))
+        pairs = prefetch(iter_pairs(input_osv, start=start, count=count,
+                                    fmt=dec_fmt, hardware=hardware,
+                                    alloc=pool.alloc if pool else None),
+                         size=PIPELINE_QUEUE_FRAMES)
+        while True:
+            with prof.stage("main.idle"):            # waiting for the decoder
+                item = next(pairs, None)
+            if item is None:
+                break
+            idx, f0, f1 = item
+            result = _stitch(idx, f0, f1, gpu_async=gpu_async)
+            with prof.stage("main.wait"):            # encoder side is behind
+                _feed((done, result))
+            prof.frame_end()
             done += 1
             if progress:
                 progress(done, n_frames)
@@ -670,6 +738,7 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
         for idx, f0, f1 in iter_pairs(input_osv, start=start, count=count,
                                       fmt=dec_fmt, hardware=hardware):
             _encode(done, _stitch(idx, f0, f1))
+            prof.frame_end()
             done += 1
             if progress:
                 progress(done, n_frames)
@@ -685,6 +754,16 @@ def convert(input_osv: str | Path, output_mp4: str | Path, *,
     logger.info("wrote %s: %d frames %dx%d %s %s%s", output_mp4, done, width, height,
                 codec, str(gpu_stitch.dev) if use_gpu else "CPU",
                 " +audio" if a_out is not None else "")
+    if prof.enabled:
+        dev = gpu_stitch.dev if use_gpu else None
+        prof.note(width=width, height=height, bit10=bool(bit10), codec=codec,
+                  device=str(dev) if dev is not None else "cpu",
+                  decode=dec_fmt, enc_sessions=n_sess if multi_enc else 1,
+                  levelling=levelling, single_pass=bool(single_pass),
+                  lens_interp=lens_interp, seam_flow=seam_flow,
+                  seam_engine=getattr(gpu_stitch, "seam_engine", None) if use_gpu else "cpu",
+                  pipeline=bool(pipeline))
+        _profile.publish(prof.finish(), _profile.memory_report(dev), emit=prof_print)
     return output_mp4
 
 

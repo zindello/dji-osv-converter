@@ -25,6 +25,7 @@ except Exception:                       # torch not installed
 from .calibration import CameraMap
 from .stitcher import seam_weights
 from .orientation import directions
+from . import profile as _profile
 
 
 def pick_device(prefer: str | None = None) -> str | None:
@@ -806,19 +807,39 @@ class GpuStitcher:
         spatial offset, (1,1,bh,W+1) ramp) or None, and ``wd`` (the
         (1,1,bh,W+1) dynamic-minus-static weight delta) or None.
         """
-        from .constants import SEAM_FLOW_MAX_SHIFT_PX
         if self._sf is None:
             self._sf_init()
-        sf = self._sf
         r0, r1 = self._sf_rows
-        bh, W, H = r1 - r0, self.W, self.H
         gs = lambda img, grid: F.grid_sample(img, grid, mode="bilinear",
                                              align_corners=True, padding_mode="border")
+        prof = _profile.active()
         # band-only rig warps (bilinear: the detectors were tuned on it)
-        Ya = gs(Y0, self.grid[0][:, r0:r1])
-        Yb = gs(Y1, self.grid[1][:, r0:r1])
-        est = self._seam_estimate(F.avg_pool2d(Ya, (1, 4)), F.avg_pool2d(Yb, (1, 4)), auto,
-                                  pre=self._band_mismatch(Ya, Yb))
+        with prof.stage("st.seam_warp", gpu=True):
+            Ya = gs(Y0, self.grid[0][:, r0:r1])
+            Yb = gs(Y1, self.grid[1][:, r0:r1])
+            an4, bn4 = F.avg_pool2d(Ya, (1, 4)), F.avg_pool2d(Yb, (1, 4))
+            pre = self._band_mismatch(Ya, Yb)                        # host sync
+        with prof.stage("st.seam_est", gpu=True):                    # download + CPU
+            est = self._seam_estimate(an4, bn4, auto, pre=pre)
+        with prof.stage("st.seam_fields", gpu=True):
+            out, morphed = self._sp_fields_from_estimate(est, Ya, Yb)
+        if morphed is not None:
+            with prof.stage("st.seam_dp", gpu=True):                 # download + CPU
+                out["wd"] = self._sp_dynamic_seam_cpu(*morphed)
+        return out
+
+    def _sp_fields_from_estimate(self, est, Ya, Yb):
+        """Device fields from the CPU estimate (photometric + flow morph).
+
+        Returns ``(fields | None, (Ma, Mb) | None)``: the morphed band crops
+        feed the dynamic seam when the flow engaged.
+        """
+        from .constants import SEAM_FLOW_MAX_SHIFT_PX
+        sf = self._sf
+        r0, r1 = self._sf_rows
+        bh, W = r1 - r0, self.W
+        gs = lambda img, grid: F.grid_sample(img, grid, mode="bilinear",
+                                             align_corners=True, padding_mode="border")
         out = {"flow": None, "photo": None, "wd": None}
         ramp = sf["ramp"]                                            # (bh,1)
         if est["photo"] is not None:
@@ -829,7 +850,7 @@ class GpuStitcher:
             for plane, sgn in ((Ya, 1.0), (Yb, -1.0)):
                 plane += sgn * (lut_t[plane.clamp(0, 1023).long()] + sp[0, 0]) * ramp
         if est["flow"] is None:
-            return out if out["photo"] is not None else None
+            return (out if out["photo"] is not None else None), None
         f01s, f10s, sh, sw = est["flow"]
 
         def up_px(f):
@@ -853,8 +874,14 @@ class GpuStitcher:
                                       o[:, 1] * (2.0 / (bh - 1))], -1)
         Ma = gs(Ya, base + to_n(o01))
         Mb = gs(Yb, base + to_n(o10))
+        return out, (Ma, Mb)
+
+    def _sp_dynamic_seam_cpu(self, Ma, Mb):
+        """Dynamic-minus-static weight delta (1,1,bh,W+1): the DP on the host."""
         from .stitcher import seam_gate, seam_path
         from .constants import SEAM_DYN_FEATHER_PX
+        r0, r1 = self._sf_rows
+        bh, W = r1 - r0, self.W
         d4 = F.avg_pool2d((Ma - Mb).abs(), (1, 4))[0, 0]
         cost = d4.cpu().numpy().astype(np.float32) * 0.25           # 10-bit -> 8-bit
         self.seam_stats["post"] = float(cost[self._sf_inner4].mean() * 4.0)
@@ -868,8 +895,7 @@ class GpuStitcher:
             wd = 1.0 - wd
         wstat = self.w3[0, 0, r0:r1]
         wd = g_t * wd + (1.0 - g_t) * wstat
-        out["wd"] = self._sp_pad_band((wd - wstat)[None, None])
-        return out
+        return self._sp_pad_band((wd - wstat)[None, None])
 
     def _stitch_single_pass(self, y0, y1, R: np.ndarray, seam_flow=False):
         """One interpolation per lens per output pixel (see the notes above).
@@ -883,50 +909,57 @@ class GpuStitcher:
         """
         if self._sp is None:
             self._sp_init()
-        Y0, U0, V0 = self._split_yuv(y0)
-        Y1, U1, V1 = self._split_yuv(y1)
-        UV0, UV1 = torch.cat([U0, V0], 1), torch.cat([U1, V1], 1)
-        gf = self._level_grid(R)                                     # (1,H,W,2)
+        prof = _profile.active()
+        with prof.stage("st.split", gpu=True):
+            Y0, U0, V0 = self._split_yuv(y0)
+            Y1, U1, V1 = self._split_yuv(y1)
+            UV0, UV1 = torch.cat([U0, V0], 1), torch.cat([U1, V1], 1)
+        with prof.stage("st.level_grid", gpu=True):
+            gf = self._level_grid(R)                                 # (1,H,W,2)
         fields = None
         if seam_flow:
             fields = self._sp_seam_fields(Y0, UV0, Y1, UV1, auto=(seam_flow == "auto"))
         H, W = self.H, self.W
         band = None
         if fields is not None:
-            gb = self._sp_band_grid(gf)                              # (1,H,W,2)
-            inb = gb[0, :, :, 1].abs() <= 1.0
-            ys, xs = inb.nonzero(as_tuple=True)
-            if ys.numel():
-                pts = gb[0][ys, xs].view(1, 1, -1, 2)                # (1,1,N,2)
-                at = lambda t: F.grid_sample(t, pts, mode="bilinear", align_corners=True,
-                                             padding_mode="zeros")[0, :, 0]   # (C,N)
-                band = (ys, xs, at)
+            with prof.stage("st.band_index", gpu=True):              # nonzero: host sync
+                gb = self._sp_band_grid(gf)                          # (1,H,W,2)
+                inb = gb[0, :, :, 1].abs() <= 1.0
+                ys, xs = inb.nonzero(as_tuple=True)
+                if ys.numel():
+                    pts = gb[0][ys, xs].view(1, 1, -1, 2)            # (1,1,N,2)
+                    at = lambda t: F.grid_sample(t, pts, mode="bilinear",
+                                                 align_corners=True,
+                                                 padding_mode="zeros")[0, :, 0]   # (C,N)
+                    band = (ys, xs, at)
         planes = []
-        for i, (Y, UV) in enumerate(((Y0, UV0), (Y1, UV1))):
-            g = gf
-            if band is not None and fields["flow"] is not None:
-                ys, xs, at = band
-                off = at(fields["flow"][i])                          # (2,N) rig px
-                g = gf.clone()
-                g[0, ys, xs, 0] += off[0] * (2.0 / W)
-                g[0, ys, xs, 1] += off[1] * (2.0 / H)
-            gh = g[:, ::2, ::2, :].contiguous()
-            planes.append(self._sp_sample_lens(Y, UV, i, g, gh))
+        with prof.stage("st.sample", gpu=True):
+            for i, (Y, UV) in enumerate(((Y0, UV0), (Y1, UV1))):
+                g = gf
+                if band is not None and fields["flow"] is not None:
+                    ys, xs, at = band
+                    off = at(fields["flow"][i])                      # (2,N) rig px
+                    g = gf.clone()
+                    g[0, ys, xs, 0] += off[0] * (2.0 / W)
+                    g[0, ys, xs, 1] += off[1] * (2.0 / H)
+                gh = g[:, ::2, ::2, :].contiguous()
+                planes.append(self._sp_sample_lens(Y, UV, i, g, gh))
         (Ya, UVa), (Yb, UVb) = planes
-        if band is not None and fields["photo"] is not None:
-            ys, xs, at = band
-            lut_t, sp_f, ramp_f = fields["photo"]
-            spf, rmp = at(sp_f)[0], at(ramp_f)[0]                    # (N,)
-            ya, yb = Ya[0, 0, ys, xs], Yb[0, 0, ys, xs]
-            Ya[0, 0, ys, xs] = ya + (lut_t[ya.clamp(0, 1023).long()] * rmp + spf)
-            Yb[0, 0, ys, xs] = yb - (lut_t[yb.clamp(0, 1023).long()] * rmp + spf)
-        w = F.grid_sample(self._sp["w"], gf, mode="bilinear", align_corners=True,
-                          padding_mode="border")
-        if band is not None and fields["wd"] is not None:
-            ys, xs, at = band
-            w[0, 0, ys, xs] += at(fields["wd"])[0]
-        Y = torch.lerp(Yb, Ya, w)
-        UV = torch.lerp(UVb, UVa, F.avg_pool2d(w, 2))      # as the two-pass w3h
+        with prof.stage("st.blend", gpu=True):
+            if band is not None and fields["photo"] is not None:
+                ys, xs, at = band
+                lut_t, sp_f, ramp_f = fields["photo"]
+                spf, rmp = at(sp_f)[0], at(ramp_f)[0]                # (N,)
+                ya, yb = Ya[0, 0, ys, xs], Yb[0, 0, ys, xs]
+                Ya[0, 0, ys, xs] = ya + (lut_t[ya.clamp(0, 1023).long()] * rmp + spf)
+                Yb[0, 0, ys, xs] = yb - (lut_t[yb.clamp(0, 1023).long()] * rmp + spf)
+            w = F.grid_sample(self._sp["w"], gf, mode="bilinear", align_corners=True,
+                              padding_mode="border")
+            if band is not None and fields["wd"] is not None:
+                ys, xs, at = band
+                w[0, 0, ys, xs] += at(fields["wd"])[0]
+            Y = torch.lerp(Yb, Ya, w)
+            UV = torch.lerp(UVb, UVa, F.avg_pool2d(w, 2))  # as the two-pass w3h
         return Y, UV
 
     def _spatial_gain(self, Ya, Yb, max_gain: float):
@@ -1024,12 +1057,18 @@ class GpuStitcher:
         The float math is torch.compile-fused; the cast goes straight to
         uint16 where the backend supports it (halves the D2H bytes vs int32).
         """
-        Yp, UVp = self._pack_fused(Y, UV)
-        if self._u16:
-            return (Yp.to(torch.uint16).cpu().numpy(),
-                    UVp.to(torch.uint16).cpu().numpy())
-        to = lambda t: t.to(torch.int32).cpu().numpy().astype(np.uint16)
-        return to(Yp), to(UVp)
+        prof = _profile.active()
+        with prof.stage("st.pack", gpu=True):
+            Yp, UVp = self._pack_fused(Y, UV)
+            if self._u16:
+                Yp, UVp = Yp.to(torch.uint16), UVp.to(torch.uint16)
+            else:
+                Yp, UVp = Yp.to(torch.int32), UVp.to(torch.int32)
+        with prof.stage("st.d2h", gpu=True):             # synchronous fetch
+            if self._u16:
+                return Yp.cpu().numpy(), UVp.cpu().numpy()
+            to = lambda t: t.cpu().numpy().astype(np.uint16)
+            return to(Yp), to(UVp)
 
     def _stitch_dev(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
                     exposure: bool = False, wb: bool = False, rs=None,
@@ -1045,28 +1084,35 @@ class GpuStitcher:
             rs = (th, rs[1], rs[2])
         else:
             rs = None
-        Ya, UVa = self._warp_planes(y0, 0, rs)
-        Yb, UVb = self._warp_planes(y1, 1, rs)
+        prof = _profile.active()
+        with prof.stage("st.warp", gpu=True):
+            Ya, UVa = self._warp_planes(y0, 0, rs)
+            Yb, UVb = self._warp_planes(y1, 1, rs)
         sfw = None
         if seam_flow:
-            Ya, UVa, Yb, UVb, wd, wdh = self._seam_flow_apply(
-                Ya, UVa, Yb, UVb, auto=(seam_flow == "auto"))
+            with prof.stage("st.seam", gpu=True):        # two-pass seam stack (CPU est.)
+                Ya, UVa, Yb, UVb, wd, wdh = self._seam_flow_apply(
+                    Ya, UVa, Yb, UVb, auto=(seam_flow == "auto"))
             sfw = (wd, wdh) if wd is not None else None
         if exposure:
             expose = self._expose_wb if wb else self._expose_luma
             Ya, UVa, Yb, UVb = expose(Ya, UVa, Yb, UVb)
-        Y = torch.lerp(Yb, Ya, self.w3)       # fused blend (see blend())
-        UV = torch.lerp(UVb, UVa, self.w3h)
-        if sfw is not None:                   # narrow dynamic seam in the band
-            r0, r1 = self._sf_rows
-            Y[:, :, r0:r1] = torch.lerp(Yb[:, :, r0:r1], Ya[:, :, r0:r1], sfw[0])
-            UV[:, :, r0 // 2:r1 // 2] = torch.lerp(UVb[:, :, r0 // 2:r1 // 2],
-                                                   UVa[:, :, r0 // 2:r1 // 2], sfw[1])
+        with prof.stage("st.blend", gpu=True):
+            Y = torch.lerp(Yb, Ya, self.w3)   # fused blend (see blend())
+            UV = torch.lerp(UVb, UVa, self.w3h)
+            if sfw is not None:               # narrow dynamic seam in the band
+                r0, r1 = self._sf_rows
+                Y[:, :, r0:r1] = torch.lerp(Yb[:, :, r0:r1], Ya[:, :, r0:r1], sfw[0])
+                UV[:, :, r0 // 2:r1 // 2] = torch.lerp(UVb[:, :, r0 // 2:r1 // 2],
+                                                       UVa[:, :, r0 // 2:r1 // 2], sfw[1])
         if not np.allclose(R, np.eye(3), atol=1e-9):
-            gf = self._level_grid(R)
-            gh = gf[:, ::2, ::2, :].contiguous()
-            Y = F.grid_sample(Y, gf, mode="bilinear", align_corners=True, padding_mode="border")
-            UV = F.grid_sample(UV, gh, mode="bilinear", align_corners=True, padding_mode="border")
+            with prof.stage("st.level", gpu=True):
+                gf = self._level_grid(R)
+                gh = gf[:, ::2, ::2, :].contiguous()
+                Y = F.grid_sample(Y, gf, mode="bilinear", align_corners=True,
+                                  padding_mode="border")
+                UV = F.grid_sample(UV, gh, mode="bilinear", align_corners=True,
+                                   padding_mode="border")
         return Y, UV
 
     def stitch_yuv(self, y0: np.ndarray, y1: np.ndarray, R: np.ndarray,
@@ -1126,18 +1172,22 @@ class GpuStitcher:
         pinned slot to the pool. Backpressure comes from the slot pool —
         callers must release each handle after consuming it.
         """
+        prof = _profile.active()
         Y, UV = self._stitch_dev(y0, y1, R, exposure, wb, rs,
                                  seam_flow=seam_flow)
-        Yp, UVp = self._pack_fused(Y, UV)
-        Yd, UVd = Yp.to(torch.uint16), UVp.to(torch.uint16)
+        with prof.stage("st.pack", gpu=True):
+            Yp, UVp = self._pack_fused(Y, UV)
+            Yd, UVd = Yp.to(torch.uint16), UVp.to(torch.uint16)
         self._ensure_async()
-        slot = self._out_pool.get()
-        done = torch.cuda.Event()
-        self._down_stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(self._down_stream):
-            slot[0].copy_(Yd, non_blocking=True)
-            slot[1].copy_(UVd, non_blocking=True)
-            done.record()
+        with prof.stage("st.wait_slot"):                 # all pinned D2H slots in use
+            slot = self._out_pool.get()
+        with prof.stage("st.d2h_launch"):
+            done = torch.cuda.Event()
+            self._down_stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(self._down_stream):
+                slot[0].copy_(Yd, non_blocking=True)
+                slot[1].copy_(UVd, non_blocking=True)
+                done.record()
         return _AsyncPlanes(self._out_pool, slot, done, (Yd, UVd))
 
 

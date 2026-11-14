@@ -267,6 +267,12 @@ DECODE_WORKER_QUEUE = 3
 PINNED_INPUT_SLOTS = 16
 ASYNC_D2H_SLOTS = 6
 
+# [ASSUMED] Frames at the start of a conversion left out of the per-stage
+# profile (profile.py): kernel compilation, pool allocation and encoder
+# start-up land there and would otherwise inflate a short clip's averages.
+# A clip no longer than this is reported whole.
+PROFILE_WARMUP_FRAMES = 30
+
 # [ASSUMED] Packets fed to the hevc_cuvid probe before concluding it cannot
 # decode this file (the decoder has multi-packet latency before frame 1).
 CUVID_PROBE_PACKETS = 64
@@ -286,5 +292,5 @@ __all__ = [
     "GPU_ENGINES", "GPU_ENGINES_DEFAULT", "gpu_engines",
     "ENC_CHUNK_SECONDS", "PIPELINE_QUEUE_FRAMES",
     "DECODE_WORKER_QUEUE", "PINNED_INPUT_SLOTS", "ASYNC_D2H_SLOTS",
-    "CUVID_PROBE_PACKETS",
+    "CUVID_PROBE_PACKETS", "PROFILE_WARMUP_FRAMES",
 ]
