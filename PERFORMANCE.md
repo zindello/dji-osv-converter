@@ -417,12 +417,16 @@ engine, and the outputs in `ab_out/perf/` (100 frames each engine, clip
 
 ## Tests
 
-`python -m unittest discover -s tests`: 100 tests, 1 skipped (CUDA only), on
+`python -m unittest discover -s tests`: 135 tests, 4 skipped (one CUDA only,
+three that need `nvidia-ml-py`, which the Mac's environment doesn't have), on
 torch-CPU and MPS. New: `tests/test_profile.py` (12), `tests/test_seam_gpu.py`
 (13: blur, photometric offsets against numpy, seam-path optimality at block
 sizes 2, 16 and 64, gate and path against the CPU code, flow recovery), `tests/test_seam_engine.py`
 (13: options, seam-off bit-identity, band restore, application against the CPU
-path, morph direction, rotation invariance), `tests/test_v100_bench.py` (9).
+path, morph direction, rotation invariance), `tests/test_v100_bench.py` (44:
+the harness's own functions against the real package, real PyAV frames and a
+real hardware encoder session, real child processes, and `nvidia-ml-py`'s
+names and types when it is importable).
 
 ## Reproducing
 
@@ -449,13 +453,27 @@ All from the repository root, with the project's virtual environment.
     python tools/v100_bench.py /path/to/CLIP.OSV --report /path/to/v100_report.md
     # every variant, diagnostics included (about twice as long):
     python tools/v100_bench.py /path/to/CLIP.OSV --report /path/to/v100_report.md --all
+    # which source a copy of the harness is (the report prints the same digest)
+    python tools/v100_bench.py --code-id
 
 `v100_bench.py` runs 450 frames per variant, each variant in its own process,
 and writes its converted files to a new temporary folder (or `--out-dir`),
-removing each one when its variant ends unless `--keep` is given. It stops
-with an error if CUDA, NVDEC, NVENC or NVML is missing, and fails a variant
-whose profile shows any other device, decoder or encoder, or whose NVDEC or
-NVENC utilisation never left zero.
+removing each one when its variant ends unless `--keep` is given.
+
+Before the first variant it makes every preflight check and, if any fail,
+stops with all of them named in one message: the clip, NVML and the card index,
+the report and output folders and their free space, the package's names and
+`convert()`'s arguments for the chosen variants, NVDEC on the clip, CUDA, a
+kernel on the card, an 8K 10-bit frame built the way the converter builds
+them, and that frame through an `hevc_nvenc` session set up as the converter
+sets its own up.
+
+A variant fails if its profile shows any other device, decoder or encoder, or
+a setting other than the one the variant asked for; if a harness switch
+(`new_p010`'s decode format, `new_dp16`'s block size) was never reached by the
+conversion; if NVML gave no sample, or NVDEC or NVENC utilisation never left
+zero; or if it is still running after `--timeout` seconds (default 1800), when
+it is killed so a hang cannot hold the card.
 
 ## Not verified without the V100
 
@@ -466,9 +484,16 @@ NVENC utilisation never left zero.
 3. Peak card memory against the 12,000 MiB lease.
 4. `SEAM_DP_BLOCK_CUDA = 64` is an assumption; the `new_dp16` variant tests it.
 5. Whether anything in the frame still synchronises the stream on CUDA.
-6. The harness itself beyond its refusals and report: its conversion calls
-   were exercised on the Mac with the probes stubbed, its NVML sampling only
-   against a fake.
+6. The parts of the harness that need the card. Off it, all ten variants
+   were converted for real through the harness's own functions (40 frames
+   each, VideoToolbox in place of NVDEC and NVENC), the whole run was made
+   with only the three card checks let through, and the preflight's frame and
+   encoder session were run with a real hardware encoder. What has not run:
+   the NVDEC probes succeeding, `torch.cuda`'s description of the card and the
+   kernel check on it, the `hevc_nvenc` session at 8K, NVML's answers inside
+   the container (whether the encoder and decoder counters are readable
+   there), `new_p010` through `hevc_cuvid`, and the block size `new_dp16`
+   replaces (64 only on CUDA).
 7. Seam stability in motion, for either engine.
 
 ## Next steps, in order of expected gain
