@@ -19,8 +19,8 @@ except Exception:                     # pragma: no cover
     torch = None
 
 from dji_osv_converter import seam_gpu
-from dji_osv_converter.constants import (SEAM_DYN_COLS, SEAM_OFFSET_AGREE_T,
-                                         SEAM_OFFSET_SIGMA)
+from dji_osv_converter.constants import (SEAM_DP_BLOCK, SEAM_DP_BLOCK_CUDA, SEAM_DYN_COLS,
+                                         SEAM_OFFSET_AGREE_T, SEAM_OFFSET_SIGMA)
 from dji_osv_converter.stitcher import seam_gate, seam_luma_offsets, seam_path
 
 LO, HI = 64.0, 940.0
@@ -133,10 +133,12 @@ class TestSeamPath(unittest.TestCase):
         rng = np.random.default_rng(2)
         for dev in _devices():
             s, _ = _seam(device=dev)
-            # widths that are and are not a multiple of the block size;
-            # heights smaller than a block's reach
-            for h, n in ((171, 960), (40, 100), (7, 64), (3, 5), (64, 1000), (20, 16)):
-                self._check(s, rng.uniform(0, 50, (h, n)).astype(np.float32), dev)
+            for block in (SEAM_DP_BLOCK, SEAM_DP_BLOCK_CUDA, 2):
+                s.dp_block = block
+                # widths that are and are not a multiple of the block size;
+                # heights smaller than a block's reach
+                for h, n in ((171, 960), (40, 100), (7, 64), (3, 5), (64, 1000), (20, 16)):
+                    self._check(s, rng.uniform(0, 50, (h, n)).astype(np.float32), dev)
 
     def test_masked_rows_are_avoided(self):
         cs = np.full((40, 200), 1e6, np.float32)

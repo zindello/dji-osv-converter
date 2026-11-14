@@ -399,8 +399,14 @@ class GpuStitcher:
         if self._d3 is None:
             d = directions(self.H, self.W).reshape(-1, 3).astype(np.float32)
             self._d3 = torch.from_numpy(np.ascontiguousarray(d.T)).to(self.dev)
-        Rt = torch.tensor(np.asarray(R, np.float32), device=self.dev)
-        n = Rt @ self._d3
+            self._Rt = torch.zeros(9, device=self.dev)
+        # nine scalar fills, not torch.tensor(R, device=...): a pageable
+        # host->device copy synchronises the CUDA stream, and this is the
+        # first thing a frame does
+        Rt = self._Rt
+        for k, v in enumerate(r):
+            Rt[k].fill_(v)
+        n = Rt.view(3, 3) @ self._d3
         gx = torch.atan2(n[0], -n[2]) * (1.0 / np.pi)
         gy = torch.asin(n[1].clamp(-1, 1)) * (-2.0 / np.pi)
         return torch.stack([gx, gy], -1).view(1, self.H, self.W, 2)

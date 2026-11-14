@@ -191,6 +191,20 @@ SEAM_LK_DAMP = 4.0            # Tikhonov damping of the structure tensor (gray
                               # levels^2 per px^2): windows with less gradient
                               # energy than this move little
 
+# Dynamic-seam path on the device (seam_gpu.SeamGpu.seam_path): columns per
+# block (a power of two). Runs of columns are composed pairwise up to a
+# block, then the blocks are walked in order: a larger block means fewer
+# but larger kernels.
+# [MEASURED] M3, 171 x 960 costs: MPS 17.2 / 17.9 / 23.1 / 32.4 ms at 8 / 16 /
+# 32 / 64; torch-CPU 8.8 / 10.2 / 15.6 / 28.3 ms. Kernel launches per solve:
+# 526 at 16, 255 at 64.
+SEAM_DP_BLOCK = 16
+# [ASSUMED] not measured on a CUDA card: there the host that launches the
+# kernels is the limiter (each launch costs the stitch thread tens of
+# microseconds on the production host's Ivy Bridge cores) and the kernels
+# themselves are small for the card, so halving the launches should win.
+# tools/v100_bench.py has a variant that runs with 16 for the comparison.
+SEAM_DP_BLOCK_CUDA = 64
 
 # ---- Stabilisation ----------------------------------------------------------
 
@@ -307,6 +321,7 @@ __all__ = [
     "SEAM_DYN_GATE_LO", "SEAM_DYN_GATE_HI", "SEAM_DYN_GATE_SIGMA",
     "SEAM_OFFSET_AGREE_T", "SEAM_OFFSET_SIGMA", "SEAM_AUTO_PHOTO_T",
     "SEAM_LK_LEVELS", "SEAM_LK_ITERS", "SEAM_LK_WINDOW_SIGMA", "SEAM_LK_DAMP",
+    "SEAM_DP_BLOCK", "SEAM_DP_BLOCK_CUDA",
     "RS_SIGMA", "RS_TABLE_DS", "RS_READOUT", "RS_ROW_DIR", "RS_SIGN",
     "TRC_GAMMA", "TRC_GAMMA_FALLBACK", "BITRATE_BPP",
     "GPU_ENGINES", "GPU_ENGINES_DEFAULT", "gpu_engines",

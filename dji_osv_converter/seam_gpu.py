@@ -41,7 +41,7 @@ try:
 except ImportError:                      # pragma: no cover - torch is optional
     torch = None
 
-from .constants import (SEAM_AUTO_PHOTO_T, SEAM_DYN_COLS, SEAM_DYN_FEATHER_PX,
+from .constants import (SEAM_AUTO_PHOTO_T, SEAM_DP_BLOCK, SEAM_DP_BLOCK_CUDA, SEAM_DYN_COLS, SEAM_DYN_FEATHER_PX,
                         SEAM_DYN_GATE_HI, SEAM_DYN_GATE_LO, SEAM_DYN_GATE_SIGMA,
                         SEAM_DYN_SIGMA, SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_SCALE,
                         SEAM_FLOW_SIGMA_ACROSS, SEAM_FLOW_SIGMA_ALONG,
@@ -53,9 +53,6 @@ from .constants import (SEAM_AUTO_PHOTO_T, SEAM_DYN_COLS, SEAM_DYN_FEATHER_PX,
 # precomputed (n, n) matrix that has the border handling folded in; longer
 # axes use pad + conv (the matrix would be large and mostly zero).
 _BLUR_MATRIX_MAX = 1024
-# The dynamic programme composes single-column steps pairwise up to blocks
-# of this many columns (a power of two), then walks the blocks in order.
-_DP_BLOCK = 16
 
 
 def gauss_kernel(sigma: float) -> np.ndarray:
@@ -158,6 +155,16 @@ class SeamGpu:
                 base=torch.stack([gx, gy], -1)[None],
                 to_norm=torch.tensor([2.0 / max(wl - 1, 1), 2.0 / max(hl - 1, 1)],
                                      device=dev).view(1, 1, 1, 2)))
+        # flow rescale factors between pyramid levels and up to the band.
+        # Built once: a per-frame torch.tensor(..., device=cuda) is a
+        # pageable host->device copy, which synchronises the stream
+        vec2 = lambda a, b: torch.tensor([a, b], device=dev).view(1, 2, 1, 1)
+        prev = None
+        for lv in self._lk_levels:
+            lv["up"] = None if prev is None else vec2(lv["w"] / prev["w"], lv["h"] / prev["h"])
+            prev = lv
+        self._lk_out = None if prev is None else vec2(self.sw / prev["w"], self.sh / prev["h"])
+        self._flow_scale = vec2(self.W / self.sw, self.bh / max(self.sh, 1))
         # central-difference gradient kernels: output channels [d/dx, d/dy]
         gk = torch.zeros(2, 1, 3, 3, device=dev)
         gk[0, 0, 1, 0], gk[0, 0, 1, 2] = -0.5, 0.5
@@ -177,6 +184,8 @@ class SeamGpu:
         self._yy = torch.arange(self.bh, device=dev, dtype=torch.float32)[:, None]
         self.w_band = w_band.reshape(1, 1, self.bh, self.W)
         self._dp_diag = None
+        #: columns per block of the dynamic programme (constants.SEAM_DP_BLOCK*)
+        self.dp_block = SEAM_DP_BLOCK_CUDA if dev.type == "cuda" else SEAM_DP_BLOCK
 
     # ---- Gaussian blurs with OpenCV's conventions --------------------------
 
@@ -347,11 +356,8 @@ class SeamGpu:
             if flow is None:
                 flow = torch.zeros(2, 2, hl, wl, device=T.device)
             else:
-                ph, pw = flow.shape[-2], flow.shape[-1]
                 flow = F.interpolate(flow, size=(hl, wl), mode="bilinear",
-                                     align_corners=False)
-                flow = flow * torch.tensor([wl / pw, hl / ph],
-                                           device=T.device).view(1, 2, 1, 1)
+                                     align_corners=False) * lv["up"]
             for _ in range(SEAM_LK_ITERS):
                 grid = lv["base"] + flow.permute(0, 2, 3, 1) * lv["to_norm"]
                 It = gs(Il, grid) - Tl
@@ -363,11 +369,8 @@ class SeamGpu:
         if flow is None:
             # a band too small for any pyramid level (tiny test rigs): no flow
             return torch.zeros(2, 2, self.sh, self.sw, device=T.device)
-        ph, pw = flow.shape[-2], flow.shape[-1]
-        flow = F.interpolate(flow, size=(self.sh, self.sw), mode="bilinear",
-                             align_corners=False)
-        return flow * torch.tensor([self.sw / pw, self.sh / ph],
-                                   device=T.device).view(1, 2, 1, 1)
+        return F.interpolate(flow, size=(self.sh, self.sw), mode="bilinear",
+                             align_corners=False) * self._lk_out
 
     def flow_small(self, ga, gb):
         """``stitcher.seam_flow_small`` on the device: gated, band-smoothed flows.
@@ -421,9 +424,7 @@ class SeamGpu:
         gb = (F.avg_pool2d(cB, (k, 1)) * 0.25).clamp(0.0, 255.0)
         fs = self.flow_small(ga, gb) * engaged                            # (2,2,sh,sw)
         fl = F.interpolate(fs, size=(self.bh, self.W), mode="bilinear", align_corners=False)
-        scale = torch.tensor([self.W / self.sw, self.bh / self.sh],
-                             device=Ya.device).view(1, 2, 1, 1)
-        fl = (fl * scale).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
+        fl = (fl * self._flow_scale).clamp(-SEAM_FLOW_MAX_SHIFT_PX, SEAM_FLOW_MAX_SHIFT_PX)
         return {"lut": lut, "sp": sp, "flow": fl, "engaged": engaged, "photo": photo,
                 "pre": pre}
 
@@ -438,14 +439,14 @@ class SeamGpu:
         operator ``P[i, d]`` = cheapest cost from row i before the run to
         row i+d at its end; a run of 2^L columns can move at most 2^L rows,
         so P is banded. Adjacent runs compose pairwise (L doubling levels,
-        each a handful of batched kernels) up to blocks of ``_DP_BLOCK``
+        each a handful of batched kernels) up to blocks of ``dp_block``
         columns; the blocks are then walked in order, and the path is
         recovered top-down from the argmins each composition kept.
         Returns (n,) int64 rows.
         """
         h, n = cs.shape
         inf = float("inf")
-        K = _DP_BLOCK
+        K = int(self.dp_block)
         nb = -(-n // K)
         c = cs.t()
         if nb * K != n:                  # zero-cost columns: free, cannot change the path
@@ -470,7 +471,7 @@ class SeamGpu:
             k *= 2
         # walk the blocks: v'[j] = min_i v[i] + P[b, i, j - i + K]
         Qf = F.pad(P.flip(2), (0, 0, K, K), value=inf)                    # (nb, h+2K, 2K+1)
-        if self._dp_diag is None or self._dp_diag.shape[0] != h:
+        if self._dp_diag is None or self._dp_diag.shape != (h, 2 * K + 1):
             self._dp_diag = (torch.arange(h, device=self.dev)[:, None]
                              + torch.arange(2 * K + 1, device=self.dev)[None, :])
         Qf = Qf.gather(1, self._dp_diag.expand(nb, h, 2 * K + 1))         # [b, j, t]
