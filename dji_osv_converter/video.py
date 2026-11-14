@@ -195,6 +195,31 @@ def _open_output(path: str) -> "av.container.OutputContainer":
     return av.open(path, "w", format="mp4")
 
 
+def _p010_av_frame(width: int, height: int, planes) -> "av.VideoFrame":
+    """A p010le ``av.VideoFrame`` filled from ``(Y, UV)`` uint16 planes.
+
+    Y is (height, width) and UV (height // 2, width), numpy arrays or CPU
+    torch tensors. PyAV cannot build this format from an array
+    (``VideoFrame.from_ndarray`` rejects ``p010le``), so the frame is
+    allocated and its planes filled. ``tools/v100_bench.py`` builds its
+    encoder test frame with this same function.
+    """
+    Y, UV = planes
+    fr = av.VideoFrame(width, height, "p010le")
+    torch = stitch_gpu.torch
+    for plane, data in zip(fr.planes, (Y, UV)):
+        buf = np.frombuffer(plane, np.uint16).reshape(plane.height, plane.line_size // 2)
+        if torch is not None:
+            # torch's memcpy releases the GIL; numpy's does not, and an
+            # 88 MB/frame GIL hold here stalls the stitch thread's kernel
+            # launches (measured as the pipeline's limiter on the V100).
+            src = data if isinstance(data, torch.Tensor) else torch.from_numpy(data)
+            torch.from_numpy(buf)[:, :src.shape[1]].copy_(src)
+        else:
+            buf[:, :data.shape[1]] = data
+    return fr
+
+
 def _pick_pix_fmt(codec: str, bit10: bool) -> str:
     # Hardware encoders take the packed 10-bit layout (which is also exactly
     # what GpuStitcher emits); software encoders take planar.
@@ -449,20 +474,7 @@ def _convert(input_osv, output_mp4, prof, prof_print, *, width, height, start, c
                                    multiband=multiband, flow=bool(seam_flow))
 
     def _p010_frame(planes) -> "av.VideoFrame":
-        Y, UV = planes
-        fr = av.VideoFrame(width, height, "p010le")
-        torch = stitch_gpu.torch
-        for plane, data in zip(fr.planes, (Y, UV)):
-            buf = np.frombuffer(plane, np.uint16).reshape(plane.height, plane.line_size // 2)
-            if torch is not None:
-                # torch's memcpy releases the GIL; numpy's does not, and an
-                # 88 MB/frame GIL hold here stalls the stitch thread's kernel
-                # launches (measured as the pipeline's limiter on the V100).
-                src = data if isinstance(data, torch.Tensor) else torch.from_numpy(data)
-                torch.from_numpy(buf)[:, :src.shape[1]].copy_(src)
-            else:
-                buf[:, :data.shape[1]] = data
-        return fr
+        return _p010_av_frame(width, height, planes)
 
     def _build_frame(result) -> "av.VideoFrame":
         if use_gpu:
